@@ -275,6 +275,45 @@ async def on_raw_reaction_remove(payload):
         if role:
             await member.remove_roles(role)
 
+@bot.event
+async def on_ready():
+    print(f"✅ Bot online als {bot.user}")
+
+    for guild in bot.guilds:
+        channel = guild.get_channel(REACTION_ROLE_CHANNEL_ID)
+        if not channel:
+            continue
+
+        # 🔴 WICHTIG: verhindert doppeltes Posten
+        async for msg in channel.history(limit=20):
+            if msg.author == bot.user and msg.embeds:
+                print("⚠️ Reaction Roles existieren bereits – überspringe")
+                return
+
+        # 📩 Embeds senden
+        for data in REACTION_ROLE_CONFIG.values():
+            embed = discord.Embed(
+                title=data["title"],
+                description=data["description"],
+                color=discord.Color.blurple()
+            )
+
+            text = ""
+            for emoji, role_id in data["roles"].items():
+                role = guild.get_role(role_id)
+                if role:
+                    text += f"{emoji} → {role.mention}\n"
+
+            embed.add_field(name="Rollen", value=text, inline=False)
+            msg = await channel.send(embed=embed)
+
+            REACTION_ROLE_MESSAGES[msg.id] = data
+
+            for emoji in data["roles"]:
+                await msg.add_reaction(emoji)
+
+
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
