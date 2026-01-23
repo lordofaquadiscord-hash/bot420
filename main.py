@@ -43,7 +43,7 @@ BAD_WORDS = [
     "hurensohn","hure","fick","toten","nigger","neger","nigga","niger",
     "fotze","schwuchtel","homo","nuttensohn","nutte","bastard",
     "schlampe","opfer","leck","spasti","behindert","hund","köter",
-    "jude","huso","hs","gefickt","lutsch","mongo","wixxer","wichser"
+    "jude","huso","gefickt","lutsch","mongo","wixxer","wichser"
 ]
 
 WELCOME_CHANNEL_ID = 983743026704826450
@@ -599,6 +599,7 @@ async def weekly_reset_task():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
 
