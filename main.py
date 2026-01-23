@@ -1,28 +1,144 @@
 import discord
 from discord.ext import commands
 import os
+import json
+import time
+import asyncio
+from datetime import datetime
+
+# ================== XP / LEVEL KONFIG ==================
+
+DATA_FILE = "userdata.json"
+
+XP_NAME = "Weedpunkte"
+LEVEL_NAME = "Weedstufe"
+COIN_NAME = "Kiffer Coins"
+
+XP_EMOJI = "<:weedxp:ID>"
+LEVEL_EMOJI = "<:weedlevel:ID>"
+COIN_EMOJI = "<:kiffercoin:ID>"
+
+LEVEL_UP_CHANNEL_ID = 123456789012345678
 
 # ================== BOT SETUP ==================
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # ================== KONFIG ==================
 
 BAD_WORDS = [
-    "hurensohn", "hure", "fick", "toten", "nigger", "neger", "nigga", "niger",
-    "fotze", "schwuchtel", "homo", "nuttensohn", "nutte", "bastard",
-    "schlampe", "opfer", "leck", "spasti", "behindert", "hund", "köter",
-    "jude", "huso", "hs", "gefickt", "lutsch", "mongo"
+    "hurensohn","hure","fick","toten","nigger","neger","nigga","niger",
+    "fotze","schwuchtel","homo","nuttensohn","nutte","bastard",
+    "schlampe","opfer","leck","spasti","behindert","hund","köter",
+    "jude","huso","hs","gefickt","lutsch","mongo"
 ]
 
 WELCOME_CHANNEL_ID = 983743026704826450
 AUTO_ROLE_ID = 983752389502836786
 WELCOME_IMAGE_URL = "https://media.discordapp.net/attachments/1039293219491565621/1462608302033731680/gaming420.png?format=webp&quality=lossless"
 LOG_CHANNEL_ID = 1462152930768589023
+
+# ================== DATENBANK ==================
+
+def load_data():
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+data = load_data()
+
+def get_user(user_id):
+    uid = str(user_id)
+    if uid not in data:
+        data[uid] = {
+            "xp": 0,
+            "level": 0,
+            "coins": 0,
+            "messages": 0,
+            "voice_seconds": 0,
+            "weekly": {
+                "xp": 0,
+                "messages": 0,
+                "voice_seconds": 0
+            }
+        }
+    return data[uid]
+
+# ================== LEVEL SYSTEM ==================
+
+def xp_needed_for_level(level):
+    return 15 + level * 5
+
+async def add_xp(member, amount):
+    user = get_user(member.id)
+    user["xp"] += amount
+    user["weekly"]["xp"] += amount
+
+    leveled = False
+
+    while user["xp"] >= xp_needed_for_level(user["level"] + 1):
+        user["xp"] -= xp_needed_for_level(user["level"] + 1)
+        user["level"] += 1
+        user["coins"] += 20
+        leveled = True
+
+    save_data()
+
+    if leveled:
+        channel = member.guild.get_channel(LEVEL_UP_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title=f"{LEVEL_EMOJI} LEVEL UP!",
+                description=(
+                    f"🔥 **{member.mention}** ist aufgestiegen!\n\n"
+                    f"{LEVEL_EMOJI} **Neue {LEVEL_NAME}:** {user['level']}\n"
+                    f"{COIN_EMOJI} **+20 {COIN_NAME}**"
+                ),
+                color=discord.Color.green()
+            )
+            await channel.send(embed=embed)
+
+# ================== VOICE TRACKING ==================
+
+voice_times = {}
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    uid = str(member.id)
+    now = time.time()
+
+    if before.channel is None and after.channel is not None:
+        voice_times[uid] = now
+
+    if before.channel is not None and after.channel is None:
+        joined = voice_times.pop(uid, None)
+        if joined:
+            duration = now - joined
+            user = get_user(member.id)
+
+            user["voice_seconds"] += duration
+            user["weekly"]["voice_seconds"] += duration
+
+            xp = int(duration // 600)
+            if xp > 0:
+                await add_xp(member, xp)
+
+            if duration >= 3600:
+                user["coins"] += 10
+                user["weekly"]["xp"] += 3
+
+            save_data()
 
 # ================== REACTION ROLES ==================
 
@@ -56,19 +172,30 @@ REACTION_ROLE_CONFIG = {
         }
     },
     "pings": {
-        "type": "multi",  # ⬅ mehrere Rollen gleichzeitig erlaubt
+        "type": "multi",
         "title": "🔔 Pings",
         "description": "Wähle, für welche Pings du benachrichtigt werden möchtest:",
         "roles": {
-            "<:valorant_competetive:1463633051123974155>": 1463384039410110494,   # ⬅ HIER ÄNDERN
+            "<:valorant_competetive:1463633051123974155>": 1463384039410110494,
             "<:valorant_customs:1463634442135404605>": 1463384082120441967,
-            "<:valorant_unrated:1463633001329197230>": 1463635078046552188 # ⬅ HIER ÄNDERN
+            "<:valorant_unrated:1463633001329197230>": 1463635078046552188
         }
     }
-
 }
 
 REACTION_ROLE_MESSAGES = {}
+
+# ================== LOG HELFER ==================
+
+async def send_log_embed(guild, title, description, color=discord.Color.blue()):
+    if not guild:
+        return
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not channel:
+        return
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.set_footer(text=f"Server: {guild.name}")
+    await channel.send(embed=embed)
 
 # ================== COMMANDS ==================
 
@@ -77,13 +204,30 @@ async def ping(ctx):
     await ctx.send("pong")
 
 @bot.command()
+async def stats(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    user = get_user(member.id)
+
+    needed = xp_needed_for_level(user["level"] + 1)
+
+    embed = discord.Embed(
+        title=f"📊 Stats von {member.display_name}",
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(name=f"{XP_EMOJI} {XP_NAME}", value=user["xp"])
+    embed.add_field(name=f"{LEVEL_EMOJI} {LEVEL_NAME}", value=user["level"])
+    embed.add_field(name="⬆️ Nächstes Level", value=f"{user['xp']} / {needed}")
+    embed.add_field(name="💬 Nachrichten", value=user["messages"])
+    embed.add_field(name="🎙 Voice-Zeit", value=f"{int(user['voice_seconds']//60)} Minuten")
+    embed.add_field(name=f"{COIN_EMOJI} {COIN_NAME}", value=user["coins"])
+
+    await ctx.send(embed=embed)
+
+@bot.command()
 @commands.has_permissions(administrator=True)
 async def reactionroles(ctx):
     channel = ctx.guild.get_channel(REACTION_ROLE_CHANNEL_ID)
-    if not channel:
-        await ctx.send("❌ Reaction-Role-Channel nicht gefunden")
-        return
-
     for data in REACTION_ROLE_CONFIG.values():
         embed = discord.Embed(
             title=data["title"],
@@ -99,29 +243,10 @@ async def reactionroles(ctx):
 
         embed.add_field(name="Rollen", value=text, inline=False)
         msg = await channel.send(embed=embed)
-
         REACTION_ROLE_MESSAGES[msg.id] = data
 
         for emoji in data["roles"]:
             await msg.add_reaction(emoji)
-
-    await ctx.send("✅ Reaction-Role-Embeds wurden gesendet")
-
-# ================== LOG HELFER ==================
-
-async def send_log_embed(guild, title, description, color=discord.Color.blue()):
-    if not guild:
-        return
-    try:
-        channel = guild.get_channel(LOG_CHANNEL_ID)
-        if not channel:
-            return
-
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_footer(text=f"Server: {guild.name}")
-        await channel.send(embed=embed)
-    except Exception as e:
-        print(f"Fehler beim Loggen: {e}")
 
 # ================== EVENTS ==================
 
@@ -133,45 +258,83 @@ async def on_message(message):
     content = message.content.lower()
     for word in BAD_WORDS:
         if word in content:
-            try:
-                await message.delete()
-                await send_log_embed(
-                    message.guild,
-                    "🚫 Nachricht gelöscht (Blacklist)",
-                    f"👤 **User:** {message.author} ({message.author.id})\n"
-                    f"📍 **Channel:** {message.channel.mention}\n\n"
-                    f"💬 **Inhalt:**\n```{message.content}```",
-                    discord.Color.red()
-                )
-            except Exception as e:
-                print(e)
+            await message.delete()
+            await send_log_embed(
+                message.guild,
+                "🚫 Nachricht gelöscht (Blacklist)",
+                f"{message.author}\n{message.channel.mention}\n```{message.content}```",
+                discord.Color.red()
+            )
             return
 
+    user = get_user(message.author.id)
+    user["messages"] += 1
+    user["weekly"]["messages"] += 1
+
+    await add_xp(message.author, 1)
+
+    if user["messages"] % 10 == 0:
+        user["coins"] += 5
+
+    save_data()
     await bot.process_commands(message)
 
 @bot.event
 async def on_member_join(member):
-    guild = member.guild
+    role = member.guild.get_role(AUTO_ROLE_ID)
+    if role:
+        await member.add_roles(role)
 
-    try:
-        role = guild.get_role(AUTO_ROLE_ID)
-        if role:
-            await member.add_roles(role)
-    except Exception as e:
-        print(e)
+    channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
+    if channel:
+        embed = discord.Embed(
+            title="Herzlich Willkommen! 🎉",
+            description=f"Tachchen {member.mention}, willkommen bei Gaming 420!",
+            color=discord.Color.green()
+        )
+        embed.set_image(url=WELCOME_IMAGE_URL)
+        await channel.send(embed=embed)
 
-    try:
-        channel = guild.get_channel(WELCOME_CHANNEL_ID)
-        if channel:
-            embed = discord.Embed(
-                title="Herzlich Willkommen! 🎉",
-                description=f"Tachchen {member.mention}, willkommen bei Gaming 420! Schön, dass du es hierher geschafft hast!",
-                color=discord.Color.green()
-            )
-            embed.set_image(url=WELCOME_IMAGE_URL)
-            await channel.send(embed=embed)
-    except Exception as e:
-        print(e)
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.message_id not in REACTION_ROLE_MESSAGES:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id)
+    emoji = str(payload.emoji)
+    data = REACTION_ROLE_MESSAGES[payload.message_id]
+
+    role_id = data["roles"].get(emoji)
+    if not role_id:
+        return
+
+    role = guild.get_role(role_id)
+
+    if data["type"] == "single":
+        for rid in data["roles"].values():
+            r = guild.get_role(rid)
+            if r in member.roles:
+                await member.remove_roles(r)
+
+    await member.add_roles(role)
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if payload.message_id not in REACTION_ROLE_MESSAGES:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id)
+    emoji = str(payload.emoji)
+    role_id = REACTION_ROLE_MESSAGES[payload.message_id]["roles"].get(emoji)
+    if role_id:
+        role = guild.get_role(role_id)
+        await member.remove_roles(role)
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot online als {bot.user}")
 
 @bot.event
 async def on_message_delete(message):
@@ -215,6 +378,7 @@ async def on_guild_channel_delete(channel):
         discord.Color.red()
     )
 
+
 @bot.event
 async def on_member_update(before, after):
     if before.nick != after.nick:
@@ -225,95 +389,9 @@ async def on_member_update(before, after):
             discord.Color.blue()
         )
 
-@bot.event
-async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id:
-        return
-    if payload.message_id not in REACTION_ROLE_MESSAGES:
-        return
-
-    guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
-    emoji = str(payload.emoji)
-    data = REACTION_ROLE_MESSAGES[payload.message_id]
-
-    role_id = data["roles"].get(emoji)
-    if not role_id:
-        return
-
-    role = guild.get_role(role_id)
-    if not role:
-        return
-
-    if data["type"] == "single":
-        for r_id in data["roles"].values():
-            r = guild.get_role(r_id)
-            if r and r in member.roles:
-                await member.remove_roles(r)
-
-        channel = guild.get_channel(payload.channel_id)
-        message = await channel.fetch_message(payload.message_id)
-        for reaction in message.reactions:
-            if str(reaction.emoji) != emoji:
-                await reaction.remove(member)
-
-    await member.add_roles(role)
-
-@bot.event
-async def on_raw_reaction_remove(payload):
-    if payload.message_id not in REACTION_ROLE_MESSAGES:
-        return
-
-    guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
-    emoji = str(payload.emoji)
-    data = REACTION_ROLE_MESSAGES[payload.message_id]
-
-    role_id = data["roles"].get(emoji)
-    if role_id:
-        role = guild.get_role(role_id)
-        if role:
-            await member.remove_roles(role)
-
-@bot.event
-async def on_ready():
-    print(f"✅ Bot online als {bot.user}")
-
-    for guild in bot.guilds:
-        channel = guild.get_channel(REACTION_ROLE_CHANNEL_ID)
-        if not channel:
-            continue
-
-        # 🔴 WICHTIG: verhindert doppeltes Posten
-        async for msg in channel.history(limit=20):
-            if msg.author == bot.user and msg.embeds:
-                print("⚠️ Reaction Roles existieren bereits – überspringe")
-                return
-
-        # 📩 Embeds senden
-        for data in REACTION_ROLE_CONFIG.values():
-            embed = discord.Embed(
-                title=data["title"],
-                description=data["description"],
-                color=discord.Color.blurple()
-            )
-
-            text = ""
-            for emoji, role_id in data["roles"].items():
-                role = guild.get_role(role_id)
-                if role:
-                    text += f"{emoji} → {role.mention}\n"
-
-            embed.add_field(name="Rollen", value=text, inline=False)
-            msg = await channel.send(embed=embed)
-
-            REACTION_ROLE_MESSAGES[msg.id] = data
-
-            for emoji in data["roles"]:
-                await msg.add_reaction(emoji)
-
 
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
