@@ -32,6 +32,10 @@ intents.members = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
+@bot.event
+async def setup_hook():
+    bot.loop.create_task(weekly_reset_task())
+
 
 # ================== KONFIG ==================
 
@@ -588,13 +592,14 @@ async def weekly_reset_task():
 
         await asyncio.sleep(30)
 
-bot.loop.create_task(weekly_reset_task())
+
 
 
 
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
 
