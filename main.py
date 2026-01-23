@@ -14,11 +14,11 @@ XP_NAME = "Weedpunkte"
 LEVEL_NAME = "Weedstufe"
 COIN_NAME = "Kiffer Coins"
 
-XP_EMOJI = "<:weedxp:ID>"
-LEVEL_EMOJI = "<:weedlevel:ID>"
-COIN_EMOJI = "<:kiffercoin:ID>"
+XP_EMOJI = "<:weed_punkte:1464315549021507645>"
+LEVEL_EMOJI = "<:weed_stufe:1464315589844795434>"
+COIN_EMOJI = "<:kiffer_coins:1464315487038083267>"
 
-LEVEL_UP_CHANNEL_ID = 123456789012345678
+LEVEL_UP_CHANNEL_ID = 1464296536170037329
 
 # ================== BOT SETUP ==================
 
@@ -393,5 +393,6 @@ async def on_member_update(before, after):
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
