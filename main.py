@@ -769,7 +769,7 @@ async def on_message(message):
     # ================== TEXT COINS (ALLE 100 NACHRICHTEN) ==================
 
     user = get_user(message.author.id)
-    if user["messages"] % 100 == 0:
+    if user["messages"] % 20 == 0:
         cur.execute(
             "UPDATE users SET coins = coins + 10 WHERE user_id = ?",
             (message.author.id,)
@@ -1052,4 +1052,3 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
-
