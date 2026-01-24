@@ -964,5 +964,6 @@ async def cleanup_pending_gambles():
 
 # ================== START ==================
 
-try:
-    bot.run(os.environ["DISCORD_TOKEN"])
+
+bot.run(os.environ["DISCORD_TOKEN"])
+
