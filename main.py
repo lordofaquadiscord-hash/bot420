@@ -467,8 +467,8 @@ async def list(ctx):
         member = ctx.guild.get_member(row["user_id"])
         if member:
             embed.add_field(
-                name=f"#{i} {member.mention}",
-                value=f"{row['total_xp']} XP",
+                name=f"#{i}",
+                value=f"{member.mention}\n{row['total_xp']} XP",
                 inline=False
             )
 
@@ -490,8 +490,8 @@ async def listweek(ctx):
         member = ctx.guild.get_member(row["user_id"])
         if member:
             embed.add_field(
-                name=f"#{i} {member.mention}",
-                value=f"{row['weekly_xp']} XP",
+                name=f"#{i}",
+                value=f"{member.mention}\n{row['weekly_xp']} XP",
                 inline=False
             )
 
@@ -564,7 +564,11 @@ async def gamble(ctx, coins: int):
         color=discord.Color.gold()
     )
 
-    embed.add_field(name=ctx.author.mention, value=f"🎲 {user_roll}")
+    embed.add_field(
+        name="Spieler",
+        value=f"{ctx.author.mention}\n🎲 {user_roll}",
+        inline=True
+    )
     embed.add_field(name="🤖 Bot", value=f"🎲 {bot_roll}")
 
     if user_roll > bot_roll:
@@ -657,8 +661,17 @@ async def gambleaccept(ctx, opponent: discord.Member):
         color=discord.Color.gold()
     )
 
-    embed.add_field(name=opponent.mention, value=f"🎲 {roll1}")
-    embed.add_field(name=ctx.author.mention, value=f"🎲 {roll2}")
+    embed.add_field(
+        name="Spieler 1",
+        value=f"{opponent.mention}\n🎲 {roll1}",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Spieler 2",
+        value=f"{ctx.author.mention}\n🎲 {roll2}",
+        inline=True
+    )
 
     if roll1 > roll2:
         change_coins(opponent.id, coins * 2)
@@ -961,8 +974,9 @@ async def weekly_reset_task():
                 )
 
                 embed.add_field(
-                    name=f"#{i+1} {member.mention}",
+                    name=f"#{i+1}",
                     value=(
+                        f"{member.mention}\n"
                         f"{XP_EMOJI} XP: {row['weekly_xp']}\n"
                         f"💬 Nachrichten: {row['weekly_messages']}\n"
                         f"🎙 Voice: {int(row['weekly_voice_seconds']//60)} Min\n"
