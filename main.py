@@ -5,11 +5,15 @@ import json
 import time
 import asyncio
 from datetime import datetime
+import sqlite3
+import random
+
+
+
 
 # ================== XP / LEVEL KONFIG ==================
 
-DATA_FILE = "userdata.json"
-REACTION_ROLE_FILE = "reaction_roles.json"
+REACTION_ROLE_FILE = "/data/reaction_roles.json"
 
 
 XP_NAME = "Weedpunkte"
@@ -24,6 +28,13 @@ LEVEL_UP_CHANNEL_ID = 1464296536170037329
 
 last_weekly_reset = None
 
+GUILD_ID = 983743026704826448
+
+# ================== GAMBLING / MINIGAMES ==================
+
+MINIGAME_CHANNEL_ID = 1464627521675984948  # ← HIER deinen Minigame-Kanal eintragen
+
+
 # ================== BOT SETUP ==================
 
 intents = discord.Intents.default()
@@ -31,10 +42,13 @@ intents.message_content = True
 intents.members = True
 intents.voice_states = True
 
-bot = commands.Bot(command_prefix='/', intents=intents)
-@bot.event
-async def setup_hook():
-    bot.loop.create_task(weekly_reset_task())
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        self.loop.create_task(weekly_reset_task())
+        self.loop.create_task(cleanup_pending_gambles())
+
+bot = MyBot(command_prefix='/', intents=intents)
+
 
 
 # ================== KONFIG ==================
@@ -43,7 +57,7 @@ BAD_WORDS = [
     "hurensohn","hure","fick","toten","nigger","neger","nigga","niger",
     "fotze","schwuchtel","homo","nuttensohn","nutte","bastard",
     "schlampe","opfer","leck","spasti","behindert","hund","köter",
-    "jude","huso","gefickt","lutsch","mongo","wixxer","wichser"
+    "jude","huso","hs","gefickt","lutsch","mongo","wixxer","wichser"
 ]
 
 WELCOME_CHANNEL_ID = 983743026704826450
@@ -53,58 +67,101 @@ LOG_CHANNEL_ID = 1462152930768589023
 
 # ================== DATENBANK ==================
 
-def load_data():
-    try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+conn = sqlite3.connect("/data/botdata.db", check_same_thread=False)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
 
-def save_data():
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    xp INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 0,
+    coins INTEGER DEFAULT 0,
+    messages INTEGER DEFAULT 0,
+    voice_seconds INTEGER DEFAULT 0,
+    total_xp INTEGER DEFAULT 0,
+    weekly_xp INTEGER DEFAULT 0,
+    weekly_messages INTEGER DEFAULT 0,
+    weekly_voice_seconds INTEGER DEFAULT 0
+)
+""")
+conn.commit()
 
-data = load_data()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS active_gambles (
+    user_id INTEGER PRIMARY KEY,
+    opponent_id INTEGER,
+    created_at INTEGER
+)
+""")
+conn.commit()
 
-def get_user(user_id):
-    uid = str(user_id)
-    if uid not in data:
-        data[uid] = {
-            "xp": 0,
-            "level": 0,
-            "coins": 0,
-            "messages": 0,
-            "voice_seconds": 0,
-            "total_xp": 0,
-            "weekly": {
-                "xp": 0,
-                "messages": 0,
-                "voice_seconds": 0
-            }
-        }
-    return data[uid]
 
-def get_sorted_users(by="xp", weekly=False):
-    key = "weekly" if weekly else None
+def get_user(user_id: int):
+    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
 
-    def value(u):
-        if weekly:
-            return data[u]["weekly"][by]
-        return data[u][by]
+    if row is None:
+        cur.execute(
+            "INSERT INTO users (user_id) VALUES (?)",
+            (user_id,)
+        )
+        conn.commit()
+        return get_user(user_id)
 
-    return sorted(data.keys(), key=lambda u: value(u), reverse=True)
+    return dict(row)
 
 def get_rank(user_id, weekly=False):
     if weekly:
-        sorted_users = get_sorted_users("xp", weekly=True)
+        cur.execute("""
+            SELECT COUNT(*) + 1 FROM users
+            WHERE weekly_xp > (SELECT weekly_xp FROM users WHERE user_id = ?)
+        """, (user_id,))
     else:
-        sorted_users = get_sorted_users("total_xp")
+        cur.execute("""
+            SELECT COUNT(*) + 1 FROM users
+            WHERE total_xp > (SELECT total_xp FROM users WHERE user_id = ?)
+        """, (user_id,))
 
-    try:
-        return sorted_users.index(str(user_id)) + 1
-    except ValueError:
-        return None
+    row = cur.fetchone()
+    return row[0] if row else None
 
+
+def has_enough_coins(user_id: int, amount: int) -> bool:
+    user = get_user(user_id)
+    return user["coins"] >= amount and amount > 0
+
+
+def change_coins(user_id: int, amount: int):
+    cur.execute(
+        "UPDATE users SET coins = coins + ? WHERE user_id = ?",
+        (amount, user_id)
+    )
+    conn.commit()
+
+def has_active_gamble(user_id: int) -> bool:
+    cur.execute(
+        "SELECT 1 FROM active_gambles WHERE user_id = ?",
+        (user_id,)
+    )
+    return cur.fetchone() is not None
+
+
+def reserve_gamble(user_id: int, opponent_id: int | None):
+    cur.execute("""
+        INSERT OR REPLACE INTO active_gambles
+        (user_id, opponent_id, created_at)
+        VALUES (?, ?, ?)
+    """, (user_id, opponent_id, int(time.time())))
+    conn.commit()
+
+
+def release_coins(user_id: int):
+    cur.execute(
+        "DELETE FROM active_gambles WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
 
 
 # ================== LEVEL SYSTEM ==================
@@ -114,20 +171,29 @@ def xp_needed_for_level(level):
 
 async def add_xp(member, amount):
     user = get_user(member.id)
-    user["total_xp"] += amount
-    user["xp"] += amount
-    user["weekly"]["xp"] += amount
+
+    xp = user["xp"] + amount
+    total_xp = user["total_xp"] + amount
+    weekly_xp = user["weekly_xp"] + amount
+
+    level = user["level"]
+    coins = user["coins"]
 
     leveled = False
 
-    while user["xp"] >= xp_needed_for_level(user["level"] + 1):
-        user["xp"] -= xp_needed_for_level(user["level"] + 1)
-        user["level"] += 1
-        user["coins"] += 20
+    while xp >= xp_needed_for_level(level + 1):
+        xp -= xp_needed_for_level(level + 1)
+        level += 1
+        coins += 20
         leveled = True
 
-
-    save_data()
+    cur.execute("""
+        UPDATE users SET
+            xp = ?, total_xp = ?, weekly_xp = ?,
+            level = ?, coins = ?
+        WHERE user_id = ?
+    """, (xp, total_xp, weekly_xp, level, coins, member.id))
+    conn.commit()
 
     if leveled:
         channel = member.guild.get_channel(LEVEL_UP_CHANNEL_ID)
@@ -136,43 +202,82 @@ async def add_xp(member, amount):
                 title=f"{LEVEL_EMOJI} LEVEL UP!",
                 description=(
                     f"🔥 **{member.mention}** ist aufgestiegen!\n\n"
-                    f"{LEVEL_EMOJI} **Neue {LEVEL_NAME}:** {user['level']}\n"
-                    f"{COIN_EMOJI} **+20 {COIN_NAME}**"
+                    f"{LEVEL_EMOJI} Neues Level: **{level}**\n"
+                    f"{COIN_EMOJI} +20 {COIN_NAME}"
                 ),
                 color=discord.Color.green()
             )
             await channel.send(embed=embed)
 
+
 # ================== VOICE TRACKING ==================
 
 voice_times = {}
+pending_gambles = {}
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    uid = str(member.id)
+    get_user(member.id)
+    uid = member.id
     now = time.time()
 
+    # JOIN Voice
     if before.channel is None and after.channel is not None:
         voice_times[uid] = now
+        return
 
+    # SWITCH Voice Channel
+    if before.channel is not None and after.channel is not None:
+        if before.channel.id != after.channel.id:
+            joined = voice_times.get(uid)
+            if joined:
+                duration = int(now - joined)
+
+                cur.execute("""
+                    UPDATE users SET
+                        voice_seconds = voice_seconds + ?,
+                        weekly_voice_seconds = weekly_voice_seconds + ?
+                    WHERE user_id = ?
+                """, (duration, duration, uid))
+                conn.commit()
+
+                xp = duration / 600
+                if xp > 0:
+                    await add_xp(member, round(xp, 2))
+
+            voice_times[uid] = now
+        return
+
+    # LEAVE Voice
     if before.channel is not None and after.channel is None:
         joined = voice_times.pop(uid, None)
-        if joined:
-            duration = int(now - joined)
-            user = get_user(member.id)
+        if not joined:
+            return
 
-            user["voice_seconds"] += duration
-            user["weekly"]["voice_seconds"] += duration
+        duration = int(now - joined)
 
-            xp = int(duration // 600)
-            if xp > 0:
-                await add_xp(member, xp)
+        cur.execute("""
+            UPDATE users SET
+                voice_seconds = voice_seconds + ?,
+                weekly_voice_seconds = weekly_voice_seconds + ?
+            WHERE user_id = ?
+        """, (duration, duration, uid))
+        conn.commit()
 
-            if duration >= 3600:
-                await add_xp(member, 3)
-                user["coins"] += 10
+        xp = duration / 600
+        if xp > 0:
+            await add_xp(member, round(xp, 2))
 
-            save_data()
+        if duration >= 3600:
+            cur.execute(
+                "UPDATE users SET coins = coins + 10 WHERE user_id = ?",
+                (uid,)
+            )
+            conn.commit()
+
+
+
+            
 
 # ================== REACTION ROLES ==================
 
@@ -307,49 +412,67 @@ async def statsweek(ctx, member: discord.Member = None):
         color=discord.Color.purple()
     )
 
-    embed.add_field(name=f"{XP_EMOJI} {XP_NAME}", value=user["weekly"]["xp"])
-    embed.add_field(name="💬 Nachrichten", value=user["weekly"]["messages"])
+    embed.add_field(name=f"{XP_EMOJI} {XP_NAME}", value=user["weekly_xp"])
+    embed.add_field(name="💬 Nachrichten", value=user["weekly_messages"])
     embed.add_field(
         name="🎙 Voice-Zeit",
-        value=f"{int(user['weekly']['voice_seconds']//60)} Minuten"
+        value=f"{int(user['weekly_voice_seconds']//60)} Minuten"
     )
+
     embed.add_field(name="🏆 Wochenrang", value=f"#{rank}")
 
     await ctx.send(embed=embed)
 
 @bot.command()
 async def list(ctx):
-    users = get_sorted_users("total_xp")[:10]
+    cur.execute("""
+        SELECT user_id, total_xp FROM users
+        ORDER BY total_xp DESC LIMIT 10
+    """)
+    rows = cur.fetchall()
+
     embed = discord.Embed(title="🏆 Top 10 Rangliste", color=discord.Color.gold())
 
-    text = ""
-    for i, uid in enumerate(users, start=1):
-        member = ctx.guild.get_member(int(uid))
+    for i, row in enumerate(rows, start=1):
+        member = ctx.guild.get_member(row["user_id"])
         if member:
-            text += f"**#{i}** {member.display_name} — {data[uid]['total_xp']} XP\n"
+            embed.add_field(
+                name=f"#{i} {member.mention}",
+                value=f"{row['total_xp']} XP",
+                inline=False
+            )
 
-    embed.description = text
     await ctx.send(embed=embed)
+
 
 
 @bot.command()
 async def listweek(ctx):
-    users = get_sorted_users("xp", weekly=True)[:10]
-    embed = discord.Embed(title="🏆 Top 10 Wochenrangliste", color=discord.Color.purple())
+    cur.execute("""
+        SELECT user_id, weekly_xp FROM users
+        ORDER BY weekly_xp DESC LIMIT 10
+    """)
+    rows = cur.fetchall()
 
-    text = ""
-    for i, uid in enumerate(users, start=1):
-        member = ctx.guild.get_member(int(uid))
+    embed = discord.Embed(title="🏆 Wochenrangliste", color=discord.Color.purple())
+
+    for i, row in enumerate(rows, start=1):
+        member = ctx.guild.get_member(row["user_id"])
         if member:
-            text += f"**#{i}** {member.display_name} — {data[uid]['weekly']['xp']} XP\n"
+            embed.add_field(
+                name=f"#{i} {member.mention}",
+                value=f"{row['weekly_xp']} XP",
+                inline=False
+            )
 
-    embed.description = text
     await ctx.send(embed=embed)
+
 
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def reactionroles(ctx):
+    REACTION_ROLE_MESSAGES.clear()
     channel = ctx.guild.get_channel(REACTION_ROLE_CHANNEL_ID)
     for data in REACTION_ROLE_CONFIG.values():
         embed = discord.Embed(
@@ -385,12 +508,156 @@ async def coins(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command()
+async def gamble(ctx, coins: int):
+    if coins <= 0:
+        await ctx.send("❌ Der Einsatz muss größer als 0 sein.")
+        return
+    if has_active_gamble(ctx.author.id):
+        await ctx.send("❌ Du hast bereits ein aktives Glücksspiel.")
+        return
+    if ctx.channel.id != MINIGAME_CHANNEL_ID:
+        return
+
+    if not has_enough_coins(ctx.author.id, coins):
+        await ctx.send("❌ Du hast nicht genug Coins.")
+        return
+    # Einsatz abziehen
+    change_coins(ctx.author.id, -coins)
+    reserve_gamble(ctx.author.id, bot.user.id)
+
+    user_roll = random.randint(1, 6)
+    bot_roll = random.randint(1, 6)
+
+    embed = discord.Embed(
+        title="🎲 Würfelspiel gegen den Bot",
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(name=ctx.author.mention, value=f"🎲 {user_roll}")
+    embed.add_field(name="🤖 Bot", value=f"🎲 {bot_roll}")
+
+    if user_roll > bot_roll:
+        change_coins(ctx.author.id, coins * 2)
+        result = f"✅ Du gewinnst **{coins} {COIN_NAME}**!"
+    elif user_roll < bot_roll:
+        result = f"❌ Du verlierst **{coins} {COIN_NAME}**."
+    else:
+        change_coins(ctx.author.id, coins)
+        result = "➖ Unentschieden – Einsatz zurück."
+
+
+    embed.add_field(name="Ergebnis", value=result, inline=False)
+    await ctx.send(embed=embed)
+    release_coins(ctx.author.id)
+
+
+@bot.command()
+async def gambleinvite(ctx, opponent: discord.Member, coins: int):
+    if coins <= 0:
+        await ctx.send("❌ Der Einsatz muss größer als 0 sein.")
+        return
+    if (ctx.author.id, opponent.id) in pending_gambles or (opponent.id, ctx.author.id) in pending_gambles:
+        await ctx.send("❌ Zwischen euch gibt es bereits eine offene Einladung.")
+        return
+    if has_active_gamble(ctx.author.id) or has_active_gamble(opponent.id):
+        await ctx.send("❌ Einer von euch hat bereits ein aktives Glücksspiel.")
+        return
+    if ctx.channel.id != MINIGAME_CHANNEL_ID:
+        return
+
+    if opponent.bot or opponent == ctx.author:
+        return
+
+    if not has_enough_coins(ctx.author.id, coins) or not has_enough_coins(opponent.id, coins):
+        await ctx.send("❌ Einer von euch hat nicht genug Coins.")
+        return
+
+    # Einsatz bei beiden abziehen
+    change_coins(ctx.author.id, -coins)
+    change_coins(opponent.id, -coins)
+
+        
+
+    reserve_gamble(ctx.author.id, opponent.id)
+    reserve_gamble(opponent.id, ctx.author.id)
+    pending_gambles[(ctx.author.id, opponent.id)] = {
+        "coins": coins,
+        "created_at": time.time()
+    }
+
+    embed = discord.Embed(
+        title="🎲 Würfel-Herausforderung",
+        description=(
+            f"{ctx.author.mention} fordert {opponent.mention} heraus!\n"
+            f"Einsatz: **{coins} {COIN_NAME}**\n\n"
+            f"{opponent.mention} → nutze `/gambleaccept {ctx.author.mention}`"
+        ),
+        color=discord.Color.orange()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def gambleaccept(ctx, opponent: discord.Member):
+    if ctx.channel.id != MINIGAME_CHANNEL_ID:
+        return
+    if not has_active_gamble(ctx.author.id):
+        await ctx.send("❌ Dein Einsatz ist nicht mehr reserviert.")
+        return
+    if not has_active_gamble(opponent.id):
+        await ctx.send("❌ Der Gegner hat kein aktives Glücksspiel mehr.")
+        return
+    if (opponent.id, ctx.author.id) not in pending_gambles:
+        await ctx.send("❌ Keine offene Herausforderung gefunden.")
+        return
+    key = (opponent.id, ctx.author.id)
+
+    data = pending_gambles.pop(key, None)
+    if not data:
+        await ctx.send("❌ Diese Herausforderung ist nicht mehr gültig.")
+        return
+
+    coins = data["coins"]
+
+    
+
+    roll1 = random.randint(1, 6)
+    roll2 = random.randint(1, 6)
+
+    embed = discord.Embed(
+        title="🎲 Würfelduell",
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(name=opponent.mention, value=f"🎲 {roll1}")
+    embed.add_field(name=ctx.author.mention, value=f"🎲 {roll2}")
+
+    if roll1 > roll2:
+        change_coins(opponent.id, coins * 2)
+        result = f"🏆 {opponent.mention} gewinnt!"
+    elif roll2 > roll1:
+        change_coins(ctx.author.id, coins * 2)
+        result = f"🏆 {ctx.author.mention} gewinnt!"
+    else:
+        change_coins(ctx.author.id, coins)
+        change_coins(opponent.id, coins)
+        result = "➖ Unentschieden – Coins zurück."
+
+
+    embed.add_field(name="Ergebnis", value=result, inline=False)
+    await ctx.send(embed=embed)
+    release_coins(ctx.author.id)
+    release_coins(opponent.id)
+
+
 # ================== EVENTS ==================
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
+
+    get_user(message.author.id)
 
     content = message.content.lower()
     for word in BAD_WORDS:
@@ -405,16 +672,29 @@ async def on_message(message):
             await bot.process_commands(message)
             return
 
+
+    cur.execute("""
+        UPDATE users SET
+            messages = messages + 1,
+            weekly_messages = weekly_messages + 1
+        WHERE user_id = ?
+    """, (message.author.id,))
+    conn.commit()
+
+    if not message.content.startswith(bot.command_prefix):
+        await add_xp(message.author, 1)
+
     user = get_user(message.author.id)
-    user["messages"] += 1
-    user["weekly"]["messages"] += 1
-
-    await add_xp(message.author, 1)
-
     if user["messages"] % 10 == 0:
-        user["coins"] += 5
+        cur.execute(
+            "UPDATE users SET coins = coins + 5 WHERE user_id = ?",
+            (message.author.id,)
+        )
+        conn.commit()
 
-    save_data()
+
+   
+
     await bot.process_commands(message)
 
 @bot.event
@@ -480,9 +760,26 @@ async def on_raw_reaction_remove(payload):
 @bot.event
 async def on_ready():
     print(f"✅ Bot online als {bot.user}")
+    # 🔄 ABGEBROCHENE GAMBLES NACH RESTART AUFRÄUMEN
+    cur.execute("SELECT user_id FROM active_gambles")
+    rows = cur.fetchall()
 
-    # Reaction Roles sind bereits aus JSON geladen
-    # Keine weitere Logik nötig – on_raw_reaction_* greift automatisch
+    for row in rows:
+        uid = row["user_id"]
+        # Coins zurückgeben (wir wissen hier nicht wie viele → safe Lösung)
+        # → KEINE Rückgabe, sondern nur Freigabe
+        release_coins(uid)
+
+    pending_gambles.clear()
+
+    now = time.time()
+
+    # 🔊 ALLE User, die gerade im Voice sind, erfassen
+    for guild in bot.guilds:
+        for vc in guild.voice_channels:
+            for member in vc.members:
+                voice_times[member.id] = now
+
 
 
 
@@ -533,12 +830,16 @@ async def on_guild_channel_delete(channel):
 @bot.event
 async def on_member_update(before, after):
     if before.nick != after.nick:
+        old = before.nick or before.name
+        new = after.nick or after.name
+
         await send_log_embed(
             after.guild,
             "👤 Nickname geändert",
-            f"{before.nick} → {after.nick}",
+            f"{old} → {new}",
             discord.Color.blue()
         )
+
 
 async def weekly_reset_task():
     await bot.wait_until_ready()
@@ -554,10 +855,22 @@ async def weekly_reset_task():
             and (last_weekly_reset is None or last_weekly_reset.date() != now.date())
         ):
             last_weekly_reset = now
-            guild = bot.guilds[0]
-            channel = guild.get_channel(LEVEL_UP_CHANNEL_ID)
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                await asyncio.sleep(60)
+                continue
 
-            ranking = get_sorted_users("xp", weekly=True)
+            channel = guild.get_channel(LEVEL_UP_CHANNEL_ID)
+            if not channel:
+                await asyncio.sleep(60)
+                continue
+
+            cur.execute("""
+            SELECT * FROM users
+            ORDER BY weekly_xp DESC
+            LIMIT 3
+            """)
+            ranking = cur.fetchall()
             rewards = [50, 30, 15]
 
             embed = discord.Embed(
@@ -565,42 +878,91 @@ async def weekly_reset_task():
                 color=discord.Color.gold()
             )
 
-            for i, uid in enumerate(ranking[:3]):
-                user = data[uid]
-                member = guild.get_member(int(uid))
+            for i, row in enumerate(ranking):
+                member = guild.get_member(row["user_id"])
 
-                user["coins"] += rewards[i]
+                cur.execute(
+                    "UPDATE users SET coins = coins + ? WHERE user_id = ?",
+                    (rewards[i], row["user_id"])
+                )
 
                 embed.add_field(
-                    name=f"#{i+1} {member.display_name}",
+                    name=f"#{i+1} {member.mention}",
                     value=(
-                        f"{XP_EMOJI} XP: {user['weekly']['xp']}\n"
-                        f"💬 Nachrichten: {user['weekly']['messages']}\n"
-                        f"🎙 Voice: {int(user['weekly']['voice_seconds']//60)} Min\n"
+                        f"{XP_EMOJI} XP: {row['weekly_xp']}\n"
+                        f"💬 Nachrichten: {row['weekly_messages']}\n"
+                        f"🎙 Voice: {int(row['weekly_voice_seconds']//60)} Min\n"
                         f"{COIN_EMOJI} +{rewards[i]} Coins"
                     ),
                     inline=False
                 )
 
+
+                
+
             await channel.send(embed=embed)
 
-            for u in data.values():
-                u["weekly"] = {"xp": 0, "messages": 0, "voice_seconds": 0}
+            # 🔊 OFFENE VOICE-ZEIT VOR RESET SPEICHERN
+            now_ts = time.time()
 
-            save_data()
+            for user_id, joined in voice_times.items():
+                duration = int(now_ts - joined)
+                if duration > 0:
+                    cur.execute("""
+                        UPDATE users SET
+                            voice_seconds = voice_seconds + ?,
+                            weekly_voice_seconds = weekly_voice_seconds + ?
+                        WHERE user_id = ?
+                    """, (duration, duration, user_id))
+
+            conn.commit()
+            voice_times.clear()
+            now_ts = time.time()
+            for guild in bot.guilds:
+                for vc in guild.voice_channels:
+                    for member in vc.members:
+                        voice_times[member.id] = now_ts
+
+
+            # 🔁 WOCHENWERTE RESETTEN
+            cur.execute("""
+            UPDATE users SET
+                weekly_xp = 0,
+                weekly_messages = 0,
+                weekly_voice_seconds = 0
+            """)
+            conn.commit()
+
+
+
             await asyncio.sleep(60)
 
         await asyncio.sleep(30)
 
+async def cleanup_pending_gambles():
+    while True:
+        await asyncio.sleep(300)  # alle 5 Minuten
+        now = time.time()
+
+        for (u1, u2), data in list(pending_gambles.items()):
+            if now - data["created_at"] > 300:
+                coins = data["coins"]
+
+                # Coins nur zurückgeben, wenn das Gamble noch reserviert ist
+                if has_active_gamble(u1):
+                    change_coins(u1, coins)
+                    release_coins(u1)
+
+                if u2 != bot.user.id and has_active_gamble(u2):
+                    change_coins(u2, coins)
+                    release_coins(u2)
+
+                pending_gambles.pop((u1, u2), None)
 
 
 
 
 # ================== START ==================
 
-bot.run(os.environ["DISCORD_TOKEN"])
-
-
-
-
-
+try:
+    bot.run(os.environ["DISCORD_TOKEN"])
