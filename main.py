@@ -77,7 +77,7 @@ bot.allowed_mentions = ALLOWED_MENTIONS
 
 # ================== XP COOLDOWN ==================
 
-MESSAGE_XP_COOLDOWN = 600  # 10 Minuten
+MESSAGE_XP_COOLDOWN = 120  # 2 Minuten
 last_message_xp = {}      # user_id -> timestamp
 
 
@@ -1052,3 +1052,4 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
