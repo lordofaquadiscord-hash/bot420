@@ -30,6 +30,24 @@ last_weekly_reset = None
 
 GUILD_ID = 983743026704826448
 
+# ================== CHANNEL RESTRIKTIONEN ==================
+
+COMMAND_ONLY_CHANNEL_IDS = [
+    1464627521675984948,  # z.B. /commands
+    1464627857497264288,  # z.B. /bot-commands
+    1463376411124305993   # z.B. /minigames
+]
+
+NO_COMMANDS_CHANNEL_IDS = [
+    983749038077804554,  # z.B. normaler Chat
+    999999999999999999,
+    983743026704826451,
+    983755098075316244,
+    1166448170264436736,
+    1242399463838974045 # z.B. media-chat
+]
+
+
 # ================== GAMBLING / MINIGAMES ==================
 
 MINIGAME_CHANNEL_ID = 1464627521675984948  # ← HIER deinen Minigame-Kanal eintragen
@@ -49,6 +67,18 @@ class MyBot(commands.Bot):
 
 bot = MyBot(command_prefix='/', intents=intents)
 
+
+ALLOWED_MENTIONS = discord.AllowedMentions(
+    users=True,
+    roles=False,
+    everyone=False
+)
+bot.allowed_mentions = ALLOWED_MENTIONS
+
+# ================== XP COOLDOWN ==================
+
+MESSAGE_XP_COOLDOWN = 600  # 10 Minuten
+last_message_xp = {}      # user_id -> timestamp
 
 
 # ================== KONFIG ==================
@@ -207,7 +237,7 @@ async def add_xp(member, amount):
                 ),
                 color=discord.Color.green()
             )
-            await channel.send(embed=embed)
+            await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 # ================== VOICE TRACKING ==================
@@ -241,9 +271,9 @@ async def on_voice_state_update(member, before, after):
                 """, (duration, duration, uid))
                 conn.commit()
 
-                xp = duration / 600
+                xp = duration // 600
                 if xp > 0:
-                    await add_xp(member, round(xp, 2))
+                    await add_xp(member, xp)
 
             voice_times[uid] = now
         return
@@ -264,9 +294,9 @@ async def on_voice_state_update(member, before, after):
         """, (duration, duration, uid))
         conn.commit()
 
-        xp = duration / 600
+        xp = duration // 600
         if xp > 0:
-            await add_xp(member, round(xp, 2))
+            await add_xp(member, xp)
 
         if duration >= 3600:
             cur.execute(
@@ -396,7 +426,7 @@ async def stats(ctx, member: discord.Member = None):
         inline=True
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 
@@ -421,7 +451,7 @@ async def statsweek(ctx, member: discord.Member = None):
 
     embed.add_field(name="🏆 Wochenrang", value=f"#{rank}")
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 @bot.command()
 async def list(ctx):
@@ -442,7 +472,7 @@ async def list(ctx):
                 inline=False
             )
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 
@@ -465,7 +495,7 @@ async def listweek(ctx):
                 inline=False
             )
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 
@@ -505,7 +535,7 @@ async def coins(ctx):
         description=f"Du besitzt aktuell **{user['coins']} {COIN_NAME}**",
         color=discord.Color.gold()
     )
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 @bot.command()
@@ -548,7 +578,7 @@ async def gamble(ctx, coins: int):
 
 
     embed.add_field(name="Ergebnis", value=result, inline=False)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
     release_coins(ctx.author.id)
 
 
@@ -573,10 +603,6 @@ async def gambleinvite(ctx, opponent: discord.Member, coins: int):
         await ctx.send("❌ Einer von euch hat nicht genug Coins.")
         return
 
-    # Einsatz bei beiden abziehen
-    change_coins(ctx.author.id, -coins)
-    change_coins(opponent.id, -coins)
-
         
 
     reserve_gamble(ctx.author.id, opponent.id)
@@ -595,7 +621,7 @@ async def gambleinvite(ctx, opponent: discord.Member, coins: int):
         ),
         color=discord.Color.orange()
     )
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 @bot.command()
 async def gambleaccept(ctx, opponent: discord.Member):
@@ -618,6 +644,8 @@ async def gambleaccept(ctx, opponent: discord.Member):
         return
 
     coins = data["coins"]
+    change_coins(ctx.author.id, -coins)
+    change_coins(opponent.id, -coins)
 
     
 
@@ -645,7 +673,7 @@ async def gambleaccept(ctx, opponent: discord.Member):
 
 
     embed.add_field(name="Ergebnis", value=result, inline=False)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
     release_coins(ctx.author.id)
     release_coins(opponent.id)
 
@@ -656,6 +684,35 @@ async def gambleaccept(ctx, opponent: discord.Member):
 async def on_message(message):
     if message.author.bot:
         return
+
+    # ❌ KEINE DMs (Bugfix gegen DM-Spam)
+    if message.guild is None:
+        return
+    # ================== CHANNEL RESTRIKTIONEN ==================
+
+    # 🔒 NUR /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
+    if message.channel.id in COMMAND_ONLY_CHANNEL_IDS:
+        ctx = await bot.get_context(message)
+        if not ctx.valid:
+            try:
+                await message.delete()
+            except:
+                pass
+            return
+
+
+    # 🚫 KEINE /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
+    if message.channel.id in NO_COMMANDS_CHANNEL_IDS:
+        ctx = await bot.get_context(message)
+        if ctx.valid:
+            try:
+                await message.delete()
+            except:
+                pass
+            return
+
+
+
 
     get_user(message.author.id)
 
@@ -680,17 +737,33 @@ async def on_message(message):
         WHERE user_id = ?
     """, (message.author.id,))
     conn.commit()
+    # ================== TEXT XP (MIT COOLDOWN) ==================
 
-    if not message.content.startswith(bot.command_prefix):
+    # ❌ KEIN XP für Commands
+    ctx = await bot.get_context(message)
+    if ctx.valid:
+        await bot.process_commands(message)
+        return
+
+    now = time.time()
+    last = last_message_xp.get(message.author.id, 0)
+
+    # ✅ XP nur alle 10 Minuten
+    if now - last >= MESSAGE_XP_COOLDOWN:
         await add_xp(message.author, 1)
+        last_message_xp[message.author.id] = now
+
+    # ================== TEXT COINS (ALLE 100 NACHRICHTEN) ==================
 
     user = get_user(message.author.id)
-    if user["messages"] % 10 == 0:
+    if user["messages"] % 100 == 0:
         cur.execute(
-            "UPDATE users SET coins = coins + 5 WHERE user_id = ?",
+            "UPDATE users SET coins = coins + 10 WHERE user_id = ?",
             (message.author.id,)
         )
         conn.commit()
+
+
 
 
    
@@ -843,6 +916,7 @@ async def on_member_update(before, after):
 
 async def weekly_reset_task():
     await bot.wait_until_ready()
+    
 
     while not bot.is_closed():
         now = datetime.now()
@@ -900,7 +974,7 @@ async def weekly_reset_task():
 
                 
 
-            await channel.send(embed=embed)
+            await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
             # 🔊 OFFENE VOICE-ZEIT VOR RESET SPEICHERN
             now_ts = time.time()
@@ -940,6 +1014,7 @@ async def weekly_reset_task():
         await asyncio.sleep(30)
 
 async def cleanup_pending_gambles():
+    await bot.wait_until_ready()
     while True:
         await asyncio.sleep(300)  # alle 5 Minuten
         now = time.time()
@@ -950,11 +1025,9 @@ async def cleanup_pending_gambles():
 
                 # Coins nur zurückgeben, wenn das Gamble noch reserviert ist
                 if has_active_gamble(u1):
-                    change_coins(u1, coins)
                     release_coins(u1)
 
                 if u2 != bot.user.id and has_active_gamble(u2):
-                    change_coins(u2, coins)
                     release_coins(u2)
 
                 pending_gambles.pop((u1, u2), None)
@@ -964,6 +1037,4 @@ async def cleanup_pending_gambles():
 
 # ================== START ==================
 
-
 bot.run(os.environ["DISCORD_TOKEN"])
-
