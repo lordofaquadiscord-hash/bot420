@@ -88,8 +88,8 @@ last_message_xp = {}      # user_id -> timestamp
 BAD_WORDS = [
     "hurensohn","hure","fick","toten","nigger","neger","nigga","niger",
     "fotze","schwuchtel","homo","nuttensohn","nutte","bastard",
-    "schlampe","opfer","leck","spasti","behindert","hund","köter",
-    "jude","huso","hs","gefickt","lutsch","mongo","wixxer","wichser"
+    "schlampe","opfer","spasti","behindert","hund","köter",
+    "jude","huso","gefickt","lutsch","mongo","wixxer","wichser"
 ]
 
 WELCOME_CHANNEL_ID = 983743026704826450
@@ -1345,3 +1345,4 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
