@@ -26,6 +26,8 @@ COIN_EMOJI = "<:kiffer_coins:1464315487038083267>"
 
 LEVEL_UP_CHANNEL_ID = 1464296536170037329
 
+BOT_OWNER_ID = 773442243138813982  # ← HIER DEINE DISCORD ID EINTRAGEN
+
 last_weekly_reset = None
 
 GUILD_ID = 983743026704826448
@@ -141,6 +143,15 @@ def get_user(user_id: int):
 
     return dict(row)
 
+def is_bot_owner(ctx):
+    return ctx.author.id == BOT_OWNER_ID
+
+async def owner_only(ctx):
+    if not is_bot_owner(ctx):
+        await ctx.send("❌ Dieser Befehl ist nur für den Bot-Owner verfügbar.")
+        return False
+    return True
+
 def get_rank(user_id, weekly=False):
     if weekly:
         cur.execute("""
@@ -194,10 +205,38 @@ def release_coins(user_id: int):
     conn.commit()
 
 
+
+
 # ================== LEVEL SYSTEM ==================
 
 def xp_needed_for_level(level):
     return 20 + (level - 1) * 5
+
+def recalc_level_from_xp(total_xp: int):
+    """
+    Berechnet Level + Rest-XP anhand von Gesamt-XP
+    """
+    level = 0
+    remaining_xp = total_xp
+
+    while remaining_xp >= xp_needed_for_level(level + 1):
+        remaining_xp -= xp_needed_for_level(level + 1)
+        level += 1
+
+    return level, remaining_xp
+
+
+def recalc_xp_from_level(level: int):
+    """
+    Berechnet Gesamt-XP, sodass der User exakt auf diesem Level steht
+    (0 XP Fortschritt ins nächste Level)
+    """
+    total_xp = 0
+    for l in range(1, level + 1):
+        total_xp += xp_needed_for_level(l)
+
+    return total_xp
+
 
 async def add_xp(member, amount):
     user = get_user(member.id)
@@ -377,6 +416,32 @@ async def send_log_embed(guild, title, description, color=discord.Color.blue()):
     embed = discord.Embed(title=title, description=description, color=color)
     embed.set_footer(text=f"Server: {guild.name}")
     await channel.send(embed=embed)
+
+def user_stats_embed(member, user, title):
+    embed = discord.Embed(
+        title=title,
+        color=discord.Color.red()
+    )
+
+    embed.add_field(
+        name=f"{LEVEL_EMOJI} {LEVEL_NAME}",
+        value=user["level"],
+        inline=True
+    )
+    embed.add_field(
+        name=f"{XP_EMOJI} {XP_NAME}",
+        value=user["xp"],
+        inline=True
+    )
+    embed.add_field(
+        name=f"{COIN_EMOJI} {COIN_NAME}",
+        value=user["coins"],
+        inline=True
+    )
+
+    embed.set_footer(text=f"User: {member} | ID: {member.id}")
+    return embed
+
 
 # ================== COMMANDS ==================
 
@@ -689,6 +754,234 @@ async def gambleaccept(ctx, opponent: discord.Member):
     await ctx.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
     release_coins(ctx.author.id)
     release_coins(opponent.id)
+
+@bot.command()
+async def setcoins(ctx, member: discord.Member, coins: int):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("UPDATE users SET coins = ? WHERE user_id = ?", (coins, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "🛠 Coins gesetzt")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def addcoins(ctx, member: discord.Member, coins: int):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (coins, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "➕ Coins hinzugefügt")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def setxp(ctx, member: discord.Member, xp: int):
+    if not await owner_only(ctx):
+        return
+
+    if xp < 0:
+        xp = 0
+
+    level, rest_xp = recalc_level_from_xp(xp)
+
+    cur.execute("""
+        UPDATE users SET
+            total_xp = ?,
+            weekly_xp = 0,
+            level = ?,
+            xp = ?
+        WHERE user_id = ?
+    """, (xp, level, rest_xp, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "🛠 XP gesetzt (Level synchronisiert)")
+    await ctx.send(embed=embed)
+
+
+
+@bot.command()
+async def addxp(ctx, member: discord.Member, xp: int):
+    if not await owner_only(ctx):
+        return
+
+    if xp == 0:
+        return
+
+    user = get_user(member.id)
+    new_total_xp = max(0, user["total_xp"] + xp)
+
+    level, rest_xp = recalc_level_from_xp(new_total_xp)
+
+    cur.execute("""
+        UPDATE users SET
+            total_xp = ?,
+            weekly_xp = weekly_xp + ?,
+            level = ?,
+            xp = ?
+        WHERE user_id = ?
+    """, (new_total_xp, max(0, xp), level, rest_xp, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "➕ XP hinzugefügt (Level synchronisiert)")
+    await ctx.send(embed=embed)
+
+
+
+@bot.command()
+async def setlevel(ctx, member: discord.Member, level: int):
+    if not await owner_only(ctx):
+        return
+
+    if level < 0:
+        level = 0
+
+    total_xp = recalc_xp_from_level(level)
+
+    cur.execute("""
+        UPDATE users SET
+            level = ?,
+            total_xp = ?,
+            weekly_xp = 0,
+            xp = 0
+        WHERE user_id = ?
+    """, (level, total_xp, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "🛠 Level gesetzt (XP synchronisiert)")
+    await ctx.send(embed=embed)
+
+
+
+@bot.command()
+async def addlevel(ctx, member: discord.Member, level: int):
+    if not await owner_only(ctx):
+        return
+
+    if level == 0:
+        return
+
+    user = get_user(member.id)
+    new_level = max(0, user["level"] + level)
+
+    total_xp = recalc_xp_from_level(new_level)
+
+    cur.execute("""
+        UPDATE users SET
+            level = ?,
+            total_xp = ?,
+            weekly_xp = weekly_xp,
+            xp = 0
+        WHERE user_id = ?
+    """, (new_level, total_xp, member.id))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "➕ Level hinzugefügt (XP synchronisiert)")
+    await ctx.send(embed=embed)
+
+
+
+@bot.command()
+async def resetuser(ctx, member: discord.Member):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("""
+        UPDATE users SET
+            xp = 0,
+            level = 0,
+            coins = 0,
+            total_xp = 0,
+            weekly_xp = 0
+        WHERE user_id = ?
+    """, (member.id,))
+
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "♻ User zurückgesetzt")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def resetcoins(ctx, member: discord.Member):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("UPDATE users SET coins = 0 WHERE user_id = ?", (member.id,))
+    conn.commit()
+
+    user = get_user(member.id)
+    embed = user_stats_embed(member, user, "♻ Coins zurückgesetzt")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def resetall(ctx):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("""
+        UPDATE users SET
+            xp = 0,
+            level = 0,
+            coins = 0,
+            total_xp = 0,
+            weekly_xp = 0,
+            weekly_messages = 0,
+            weekly_voice_seconds = 0
+    """)
+
+    conn.commit()
+
+    embed = discord.Embed(
+        title="⚠️ GLOBAL RESET",
+        description="Alle User wurden vollständig zurückgesetzt.",
+        color=discord.Color.dark_red()
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def setcoinsall(ctx, coins: int):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("UPDATE users SET coins = ?", (coins,))
+    conn.commit()
+
+    embed = discord.Embed(
+        title="🛠 Coins global gesetzt",
+        description=f"Alle User haben jetzt **{coins} {COIN_NAME}**",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def addcoinsall(ctx, coins: int):
+    if not await owner_only(ctx):
+        return
+
+    cur.execute("UPDATE users SET coins = coins + ?", (coins,))
+    conn.commit()
+
+    embed = discord.Embed(
+        title="➕ Coins global hinzugefügt",
+        description=f"Allen Usern wurden **{coins} {COIN_NAME}** hinzugefügt",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
 
 
 # ================== EVENTS ==================
