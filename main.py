@@ -682,9 +682,15 @@ def user_stats_embed(member, user, title):
 async def ping(ctx):
     await ctx.send("pong")
 
-@bot.tree.command(name="blackjack", description="Spiele Blackjack mit Kiffer Coins")
+@bot.tree.command(
+    name="blackjack",
+    description="Spiele Blackjack mit Kiffer Coins",
+    guild=discord.Object(id=GUILD_ID)
+)
 @app_commands.describe(coins="Einsatz")
 async def blackjack(interaction: discord.Interaction, coins: int):
+
+
 
     if interaction.channel.id != BLACKJACK_CHANNEL_ID:
         await interaction.response.send_message(
@@ -1423,7 +1429,11 @@ async def on_raw_reaction_remove(payload):
 @bot.event
 async def on_ready():
     print(f"✅ Bot online als {bot.user}")
-    await bot.tree.sync()
+
+    guild = discord.Object(id=GUILD_ID)
+    await bot.tree.sync(guild=guild)
+
+    print("✅ Slash Commands für Guild synchronisiert")
     # 🔄 ABGEBROCHENE GAMBLES NACH RESTART AUFRÄUMEN
     cur.execute("SELECT user_id FROM active_gambles")
     rows = cur.fetchall()
@@ -1630,6 +1640,7 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
 
