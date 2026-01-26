@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import os
 import json
 import time
@@ -7,6 +8,7 @@ import asyncio
 from datetime import datetime
 import sqlite3
 import random
+import math
 
 
 
@@ -48,6 +50,44 @@ NO_COMMANDS_CHANNEL_IDS = [
     1166448170264436736,
     1242399463838974045 # z.B. media-chat
 ]
+
+
+BLACKJACK_CHANNEL_ID = 1464627857497264288  # ⬅️ Blackjack-Channel-ID
+
+# Kartenrückseite (optional)
+CARD_BACK_IMAGE = "https://media.discordapp.net/attachments/1039293219491565621/1465151863514206361/content.png?ex=69781081&is=6976bf01&hm=a10cbdeed96afece3727d9cbf39959a82d89d640607ff10bf468a4ab64bc3f17&=&format=webp&quality=lossless&width=640&height=960"
+
+# =====================================================
+# 🃏 KARTEN & DECK
+# =====================================================
+
+SUITS = ["♠", "♥", "♦", "♣"]
+RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+
+def create_deck():
+    deck = [(r, s) for r in RANKS for s in SUITS]
+    random.shuffle(deck)
+    return deck
+
+def card_value(card):
+    rank, _ = card
+    if rank in ("J", "Q", "K"):
+        return 10
+    if rank == "A":
+        return 11
+    return int(rank)
+
+def hand_value(hand):
+    value = sum(card_value(c) for c in hand)
+    aces = sum(1 for c in hand if c[0] == "A")
+    while value > 21 and aces:
+        value -= 10
+        aces -= 1
+    return value
+
+def hand_to_string(hand):
+    return " ".join(f"{r}{s}" for r, s in hand)
+
 
 
 # ================== GAMBLING / MINIGAMES ==================
@@ -203,6 +243,200 @@ def release_coins(user_id: int):
         (user_id,)
     )
     conn.commit()
+
+
+
+# =====================================================
+# 🎰 BLACKJACK SESSION
+# =====================================================
+
+class BlackjackSession:
+    def __init__(self, user_id, bet):
+        self.user_id = user_id
+        self.bet = bet
+        self.deck = create_deck()
+
+        self.hands = [[self.deck.pop(), self.deck.pop()]]
+        self.current_hand = 0
+
+        self.dealer = [self.deck.pop(), self.deck.pop()]
+        self.finished = False
+
+    def current(self):
+        return self.hands[self.current_hand]
+
+    def hit(self):
+        self.current().append(self.deck.pop())
+
+    def can_split(self):
+        hand = self.current()
+        return len(hand) == 2 and hand[0][0] == hand[1][0]
+
+    def split(self):
+        hand = self.current()
+        card = hand.pop()
+        self.hands.append([card, self.deck.pop()])
+        hand.append(self.deck.pop())
+
+    def dealer_play(self):
+        while hand_value(self.dealer) < 17:
+            self.dealer.append(self.deck.pop())
+
+    def can_double(self):
+        return len(self.current()) == 2
+
+
+# =====================================================
+# 🎮 VIEW & BUTTONS
+# =====================================================
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, interaction, session):
+        super().__init__(timeout=120)
+        self.interaction = interaction
+        self.session = session
+
+    async def on_timeout(self):
+        release_coins(self.session.user_id)
+        try:
+            await self.interaction.edit_original_response(
+                content="⏱️ Blackjack abgebrochen (Timeout).",
+                view=None
+            )
+        except:
+            pass
+
+
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.session.user_id
+
+    def build_embed(self, final=False):
+        embed = discord.Embed(
+            title="🃏 Blackjack",
+            color=discord.Color.gold()
+        )
+
+        for i, hand in enumerate(self.session.hands):
+            marker = "👉 " if i == self.session.current_hand and not final else ""
+            embed.add_field(
+                name=f"{marker}Hand {i+1} ({hand_value(hand)})",
+                value=hand_to_string(hand),
+                inline=False
+            )
+
+        if final:
+            dealer_val = hand_value(self.session.dealer)
+            dealer_cards = hand_to_string(self.session.dealer)
+        else:
+            dealer_val = "?"
+            dealer_cards = f"{self.session.dealer[0][0]}{self.session.dealer[0][1]} 🂠"
+
+        embed.add_field(
+            name=f"Dealer ({dealer_val})",
+            value=dealer_cards,
+            inline=False
+        )
+
+        embed.set_footer(text=f"Einsatz: {self.session.bet} {COIN_NAME}")
+        return embed
+
+    async def end_game(self):
+        self.session.dealer_play()
+        dealer_val = hand_value(self.session.dealer)
+
+        result_text = ""
+        for hand in self.session.hands:
+            val = hand_value(hand)
+
+            if val > 21:
+                result_text += "❌ Bust\n"
+
+            elif val == 21 and len(hand) == 2:
+                # Blackjack 3:2 Auszahlung (aufgerundet)
+                payout = math.ceil(self.session.bet * 2.5)
+                change_coins(self.session.user_id, payout)
+                result_text += f"🃏 Blackjack! (+{payout - self.session.bet} {COIN_NAME})\n"
+
+            elif dealer_val > 21 or val > dealer_val:
+                change_coins(self.session.user_id, self.session.bet * 2)
+                result_text += "✅ Gewinn\n"
+
+            elif val == dealer_val:
+                change_coins(self.session.user_id, self.session.bet)
+                result_text += "➖ Push\n"
+
+            else:
+                result_text += "❌ Verlust\n"
+
+
+        release_coins(self.session.user_id)
+
+        embed = self.build_embed(final=True)
+        embed.add_field(name="Ergebnis", value=result_text)
+
+        await self.interaction.edit_original_response(embed=embed, view=None)
+
+    async def next_hand(self, interaction):
+        self.session.current_hand += 1
+        if self.session.current_hand >= len(self.session.hands):
+            await self.end_game()
+        else:
+            await interaction.response.edit_message(embed=self.build_embed())
+
+    # ================= BUTTONS =================
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.success)
+    async def hit(self, interaction, button):
+        self.session.hit()
+        if hand_value(self.session.current()) >= 21:
+            await self.next_hand(interaction)
+        else:
+            await interaction.response.edit_message(embed=self.build_embed())
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
+    async def stand(self, interaction, button):
+        await self.next_hand(interaction)
+
+    @discord.ui.button(label="Split", style=discord.ButtonStyle.primary)
+    async def split(self, interaction, button):
+        if not self.session.can_split():
+            await interaction.response.send_message("❌ Split nicht möglich.", ephemeral=True)
+            return
+
+        if not has_enough_coins(self.session.user_id, self.session.bet):
+            await interaction.response.send_message("❌ Nicht genug Coins für Split.", ephemeral=True)
+            return
+
+        change_coins(self.session.user_id, -self.session.bet)
+        self.session.split()
+        await interaction.response.edit_message(embed=self.build_embed())
+
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger)
+    async def double(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not self.session.can_double():
+            await interaction.response.send_message(
+                "❌ Double Down ist nur bei genau 2 Karten möglich.",
+                ephemeral=True
+            )
+            return
+
+        if not has_enough_coins(self.session.user_id, self.session.bet):
+            await interaction.response.send_message(
+                "❌ Nicht genug Coins für Double Down.",
+                ephemeral=True
+            )
+            return
+
+        # Einsatz verdoppeln
+        change_coins(self.session.user_id, -self.session.bet)
+        self.session.bet *= 2
+
+        # Genau eine Karte ziehen
+        self.session.hit()
+
+        # Danach automatisch Stand
+        await self.next_hand(interaction)
 
 
 
@@ -448,6 +682,48 @@ def user_stats_embed(member, user, title):
 @bot.command()
 async def ping(ctx):
     await ctx.send("pong")
+
+@bot.tree.command(name="blackjack", description="Spiele Blackjack mit Kiffer Coins")
+@app_commands.describe(coins="Einsatz")
+async def blackjack(interaction: discord.Interaction, coins: int):
+
+    if interaction.channel.id != BLACKJACK_CHANNEL_ID:
+        await interaction.response.send_message(
+            "❌ Blackjack ist nur im Blackjack-Channel erlaubt.",
+            ephemeral=True
+        )
+        return
+
+    user_id = interaction.user.id
+
+    if coins <= 0:
+        await interaction.response.send_message("❌ Ungültiger Einsatz.", ephemeral=True)
+        return
+
+    if has_active_gamble(user_id):
+        await interaction.response.send_message(
+            "❌ Du spielst bereits ein Glücksspiel.",
+            ephemeral=True
+        )
+        return
+
+    if not has_enough_coins(user_id, coins):
+        await interaction.response.send_message(
+            "❌ Nicht genug Kiffer Coins.",
+            ephemeral=True
+        )
+        return
+
+    change_coins(user_id, -coins)
+    reserve_gamble(user_id, bot.user.id)
+
+    session = BlackjackSession(user_id, coins)
+    view = BlackjackView(interaction, session)
+
+    await interaction.response.send_message(
+        embed=view.build_embed(),
+        view=view
+    )
 
 
 @bot.command()
@@ -1139,6 +1415,7 @@ async def on_raw_reaction_remove(payload):
 @bot.event
 async def on_ready():
     print(f"✅ Bot online als {bot.user}")
+    await bot.tree.sync()
     # 🔄 ABGEBROCHENE GAMBLES NACH RESTART AUFRÄUMEN
     cur.execute("SELECT user_id FROM active_gambles")
     rows = cur.fetchall()
