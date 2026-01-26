@@ -1272,9 +1272,15 @@ async def on_message(message):
         return
     # ================== CHANNEL RESTRIKTIONEN ==================
 
+    
     # 🔒 NUR /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
     if message.channel.id in COMMAND_ONLY_CHANNEL_IDS:
         ctx = await bot.get_context(message)
+
+        # ⛔ Slash-Command-Systemnachrichten NICHT löschen
+        if message.type == discord.MessageType.chat_input_command:
+            return
+
         if not ctx.valid:
             try:
                 await message.delete()
@@ -1286,7 +1292,9 @@ async def on_message(message):
     # 🚫 KEINE /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
     if message.channel.id in NO_COMMANDS_CHANNEL_IDS:
         ctx = await bot.get_context(message)
-        if ctx.valid:
+
+        # ⛔ Slash-Command-Systemnachrichten löschen (gewollt!)
+        if message.type == discord.MessageType.chat_input_command:
             try:
                 await message.delete()
             except:
@@ -1622,4 +1630,5 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
