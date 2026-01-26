@@ -37,8 +37,7 @@ GUILD_ID = 983743026704826448
 # ================== CHANNEL RESTRIKTIONEN ==================
 
 COMMAND_ONLY_CHANNEL_IDS = [
-    1464627521675984948,  # z.B. /commands
-    1464627857497264288,  # z.B. /bot-commands
+    1464627521675984948,  # z.B. /commands 
     1463376411124305993   # z.B. /minigames
 ]
 
@@ -1275,11 +1274,12 @@ async def on_message(message):
     
     # 🔒 NUR /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
     if message.channel.id in COMMAND_ONLY_CHANNEL_IDS:
-        ctx = await bot.get_context(message)
 
-        # ⛔ Slash-Command-Systemnachrichten NICHT löschen
+        # ✅ Slash-Command-Systemnachrichten IMMER erlauben
         if message.type == discord.MessageType.chat_input_command:
             return
+
+        ctx = await bot.get_context(message)
 
         if not ctx.valid:
             try:
@@ -1630,5 +1630,6 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
