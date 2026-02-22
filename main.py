@@ -22,9 +22,9 @@ XP_NAME = "Weedpunkte"
 LEVEL_NAME = "Weedstufe"
 COIN_NAME = "Kiffer Coins"
 
-XP_EMOJI = "<:weed_punkte:1464315549021507645>"
-LEVEL_EMOJI = "<:weed_stufe:1464315589844795434>"
-COIN_EMOJI = "<:kiffer_coins:1464315487038083267>"
+XP_EMOJI = "<:weed_punkte:1475190720687243396>"
+LEVEL_EMOJI = "<:weed_stufe:1475190650688376982>"
+COIN_EMOJI = "<:kiffer_coins:1475190767961243719>"
 
 LEVEL_UP_CHANNEL_ID = 1475186463946575873
 
@@ -1640,6 +1640,7 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
 
