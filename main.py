@@ -26,7 +26,7 @@ XP_EMOJI = "<:weed_punkte:1464315549021507645>"
 LEVEL_EMOJI = "<:weed_stufe:1464315589844795434>"
 COIN_EMOJI = "<:kiffer_coins:1464315487038083267>"
 
-LEVEL_UP_CHANNEL_ID = 1464296536170037329
+LEVEL_UP_CHANNEL_ID = 1475186463946575873
 
 BOT_OWNER_ID = 773442243138813982  # ← HIER DEINE DISCORD ID EINTRAGEN
 
@@ -1640,6 +1640,7 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
+
 
 
 
