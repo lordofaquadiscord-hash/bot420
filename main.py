@@ -37,7 +37,7 @@ GUILD_ID = 983743026704826448
 # ================== CHANNEL RESTRIKTIONEN ==================
 
 COMMAND_ONLY_CHANNEL_IDS = [
-    1464627521675984948,  # z.B. /commands 
+    1464627521675984948,  # z.B. /commands
     1463376411124305993   # z.B. /minigames
 ]
 
@@ -579,7 +579,7 @@ async def on_voice_state_update(member, before, after):
 
 
 
-            
+
 
 # ================== REACTION ROLES ==================
 
@@ -953,7 +953,7 @@ async def gambleinvite(ctx, opponent: discord.Member, coins: int):
         await ctx.send("❌ Einer von euch hat nicht genug Coins.")
         return
 
-        
+
 
     reserve_gamble(ctx.author.id, opponent.id)
     reserve_gamble(opponent.id, ctx.author.id)
@@ -997,7 +997,7 @@ async def gambleaccept(ctx, opponent: discord.Member):
     change_coins(ctx.author.id, -coins)
     change_coins(opponent.id, -coins)
 
-    
+
 
     roll1 = random.randint(1, 6)
     roll2 = random.randint(1, 6)
@@ -1277,7 +1277,7 @@ async def on_message(message):
         return
     # ================== CHANNEL RESTRIKTIONEN ==================
 
-    
+
     # 🔒 NUR /BEFEHLE ERLAUBT (MEHRERE CHANNELS)
     if message.channel.id in COMMAND_ONLY_CHANNEL_IDS:
 
@@ -1362,7 +1362,7 @@ async def on_message(message):
 
 
 
-   
+
 
     await bot.process_commands(message)
 
@@ -1517,7 +1517,7 @@ async def on_member_update(before, after):
 
 async def weekly_reset_task():
     await bot.wait_until_ready()
-    
+
 
     while not bot.is_closed():
         now = datetime.now()
@@ -1574,7 +1574,7 @@ async def weekly_reset_task():
                 )
 
 
-                
+
 
             await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
@@ -1638,10 +1638,8 @@ async def cleanup_pending_gambles():
 
 
 # ================== START ==================
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 bot.run(os.environ["DISCORD_TOKEN"])
-
-
-
-
-
