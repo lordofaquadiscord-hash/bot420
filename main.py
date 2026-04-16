@@ -603,7 +603,7 @@ REACTION_ROLE_CONFIG = {
         "description": "Wähle **einen** Valorant Rang:",
         "roles": {
             "<:valorant_iron:1154918607462092821>": 1463382014395809813,
-            "<:valorant_bronze:1461781498351976498>": 1463382723308814508,
+            "<:valorant_bronze:1475193587896684576>": 1463382723308814508,
             "<:valorant_silver:1154918951847997471>": 1463382759790870630,
             "<:valorant_gold:1154920773903994921>": 1463382790899896559,
             "<:valorant_platinum:1154918888920858687>": 1463383093392965642,
@@ -617,9 +617,9 @@ REACTION_ROLE_CONFIG = {
         "title": "🔔 Pings",
         "description": "Wähle, für welche Pings du benachrichtigt werden möchtest:",
         "roles": {
-            "<:valorant_competetive:1463633051123974155>": 1463384039410110494,
-            "<:valorant_customs:1463634442135404605>": 1463384082120441967,
-            "<:valorant_unrated:1463633001329197230>": 1463635078046552188
+            "<:valorant_competetive:1475190933153644829>": 1463384039410110494,
+            "<:valorant_customs:1475190844406497410>": 1463384082120441967,
+            "<:valorant_unrated:1475191000824549387>": 1463635078046552188
         }
     }
 }
@@ -1640,7 +1640,6 @@ async def cleanup_pending_gambles():
 # ================== START ==================
 
 bot.run(os.environ["DISCORD_TOKEN"])
-
 
 
 
