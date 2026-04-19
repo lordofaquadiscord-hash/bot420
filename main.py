@@ -15,7 +15,7 @@ import math
 
 # ================== XP / LEVEL KONFIG ==================
 
-REACTION_ROLE_FILE = "/data/reaction_roles.json"
+REACTION_ROLE_FILE = "reaction_roles.json"
 
 
 XP_NAME = "Weedpunkte"
@@ -52,6 +52,8 @@ NO_COMMANDS_CHANNEL_IDS = [
 
 
 BLACKJACK_CHANNEL_ID = 1464627857497264288  # ⬅️ Blackjack-Channel-ID
+
+GIVEAWAY_CHANNEL_ID = 1475185983053103381  # <- dein Giveaway Channel
 
 # Kartenrückseite (optional)
 CARD_BACK_IMAGE = "https://media.discordapp.net/attachments/1039293219491565621/1465151863514206361/content.png?ex=69781081&is=6976bf01&hm=a10cbdeed96afece3727d9cbf39959a82d89d640607ff10bf468a4ab64bc3f17&=&format=webp&quality=lossless&width=640&height=960"
@@ -104,6 +106,7 @@ intents.voice_states = True
 class MyBot(commands.Bot):
     async def setup_hook(self):
         self.loop.create_task(weekly_reset_task())
+        self.loop.create_task(giveaway_task())
         self.loop.create_task(cleanup_pending_gambles())
 
 bot = MyBot(command_prefix='/', intents=intents)
@@ -136,9 +139,19 @@ AUTO_ROLE_ID = 983752389502836786
 WELCOME_IMAGE_URL = "https://media.discordapp.net/attachments/1039293219491565621/1462608302033731680/gaming420.png?format=webp&quality=lossless"
 LOG_CHANNEL_ID = 1462152930768589023
 
+
+# ================== COIN REWARDS KONFIG ==================
+
+COIN_REWARDS = {
+    "message_bonus": 100,      # aktuell: 100 Coins pro 20 Nachrichten (wird indirekt genutzt)
+    "voice_hour": 250,       # aktuell: 250 Coins pro Stunde Voice
+    "level_up": 200,         # aktuell: +200 Coins pro Level
+    "weekly": [800, 500, 300]
+}
+
 # ================== DATENBANK ==================
 
-conn = sqlite3.connect("/data/botdata.db", check_same_thread=False)
+conn = sqlite3.connect("botdata.db", check_same_thread=False)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
@@ -167,6 +180,31 @@ CREATE TABLE IF NOT EXISTS active_gambles (
 """)
 conn.commit()
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS giveaways (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    description TEXT,
+    price INTEGER,
+    reward INTEGER,
+    winners INTEGER,
+    channel_id INTEGER,
+    message_id INTEGER,
+    created_at INTEGER,
+    ends_at INTEGER,
+    active INTEGER DEFAULT 1
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS giveaway_entries (
+    giveaway_id INTEGER,
+    user_id INTEGER,
+    PRIMARY KEY (giveaway_id, user_id)
+)
+""")
+
+conn.commit()
 
 def get_user(user_id: int):
     cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -486,7 +524,7 @@ async def add_xp(member, amount):
     while xp >= xp_needed_for_level(level + 1):
         xp -= xp_needed_for_level(level + 1)
         level += 1
-        coins += 20
+        coins += COIN_REWARDS["level_up"]
         leveled = True
 
     cur.execute("""
@@ -526,7 +564,6 @@ async def on_voice_state_update(member, before, after):
     # JOIN Voice
     if before.channel is None and after.channel is not None:
         voice_times[uid] = now
-        return
 
     # SWITCH Voice Channel
     if before.channel is not None and after.channel is not None:
@@ -548,7 +585,6 @@ async def on_voice_state_update(member, before, after):
                     await add_xp(member, xp)
 
             voice_times[uid] = now
-        return
 
     # LEAVE Voice
     if before.channel is not None and after.channel is None:
@@ -572,11 +608,102 @@ async def on_voice_state_update(member, before, after):
 
         if duration >= 3600:
             cur.execute(
-                "UPDATE users SET coins = coins + 10 WHERE user_id = ?",
-                (uid,)
+                "UPDATE users SET coins = coins + ? WHERE user_id = ?",
+                (COIN_REWARDS["voice_hour"], uid)
             )
             conn.commit()
+    # ================== VOICE LOGS ==================
 
+    # 🔊 Channel Join
+    if before.channel is None and after.channel is not None:
+        await send_log(
+            member.guild,
+            "Voice beigetreten",
+            f"**User:** {member.mention}\n**Channel:** {after.channel.mention}",
+            discord.Color.green()
+        )
+
+    # 🔇 Channel verlassen
+    if before.channel is not None and after.channel is None:
+        await send_log(
+            member.guild,
+            "Voice verlassen",
+            f"**User:** {member.mention}\n**Channel:** {before.channel.mention}",
+            discord.Color.red()
+        )
+
+    # 🔁 Channel gewechselt
+    if before.channel and after.channel and before.channel != after.channel:
+        await send_log(
+            member.guild,
+            "Voice gewechselt",
+            (
+                f"**User:** {member.mention}\n"
+                f"**Von:** {before.channel.mention}\n"
+                f"**Nach:** {after.channel.mention}"
+            ),
+            discord.Color.blue()
+        )
+
+    # 🔇 Server Mute
+    if not before.mute and after.mute:
+        moderator = "Unbekannt"
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == member.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            member.guild,
+            "Voice stummgeschaltet",
+            f"**User:** {member.mention}\n**Von:** {moderator}",
+            discord.Color.orange()
+        )
+
+    # 🔊 Server Unmute
+    if before.mute and not after.mute:
+        moderator = "Unbekannt"
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == member.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            member.guild,
+            "Voice entstummt",
+            f"**User:** {member.mention}\n**Von:** {moderator}",
+            discord.Color.green()
+        )
+
+    # 🎧 Deaf
+    if not before.deaf and after.deaf:
+        moderator = "Unbekannt"
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == member.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            member.guild,
+            "Voice taub geschaltet",
+            f"**User:** {member.mention}\n**Von:** {moderator}",
+            discord.Color.orange()
+        )
+
+    # 🎧 Undeaf
+    if before.deaf and not after.deaf:
+        moderator = "Unbekannt"
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == member.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            member.guild,
+            "Voice Taubheit entfernt",
+            f"**User:** {member.mention}\n**Von:** {moderator}",
+            discord.Color.green()
+        )
 
 
 
@@ -640,14 +767,37 @@ REACTION_ROLE_MESSAGES = load_reaction_roles()
 
 # ================== LOG HELFER ==================
 
-async def send_log_embed(guild, title, description, color=discord.Color.blue()):
+# ================== LOG SYSTEM ==================
+# Zentrale Funktion für schöne & einheitliche Logs
+
+async def send_log(
+    guild,
+    title,
+    description,
+    color=discord.Color.dark_gray()
+):
+    """
+    Universelle Log-Funktion
+    → sorgt für einheitliches Design
+    → einfach überall wiederverwendbar
+    """
+
     if not guild:
         return
+
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
-    embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text=f"Server: {guild.name}")
+
+    embed = discord.Embed(
+        title=f"📌 {title}",
+        description=description,
+        color=color,
+        timestamp=datetime.utcnow()
+    )
+
+    embed.set_footer(text=f"{guild.name}")
+
     await channel.send(embed=embed)
 
 def user_stats_embed(member, user, title):
@@ -729,6 +879,229 @@ async def blackjack(interaction: discord.Interaction, coins: int):
         embed=view.build_embed(),
         view=view
     )
+
+class GiveawayView(discord.ui.View):
+    def __init__(self, giveaway_id):
+        super().__init__(timeout=None)
+        self.giveaway_id = giveaway_id
+
+    async def update_embed(self, interaction):
+        cur.execute("SELECT * FROM giveaways WHERE id = ?", (self.giveaway_id,))
+        g = cur.fetchone()
+
+        cur.execute("""
+            SELECT COUNT(*) FROM giveaway_entries
+            WHERE giveaway_id = ?
+        """, (self.giveaway_id,))
+        count = cur.fetchone()[0]
+
+        embed = interaction.message.embeds[0]
+
+        embed.set_field_at(
+            0,
+            name="👥 Teilnehmer",
+            value=str(count),
+            inline=False
+        )
+
+        await interaction.message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="Teilnehmen 🎉", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        user_id = interaction.user.id
+
+        cur.execute("SELECT * FROM giveaways WHERE id = ?", (self.giveaway_id,))
+        g = cur.fetchone()
+
+        if not g or g["active"] == 0:
+            await interaction.response.send_message("❌ Giveaway beendet.", ephemeral=True)
+            return
+
+        cur.execute("""
+            SELECT 1 FROM giveaway_entries
+            WHERE giveaway_id = ? AND user_id = ?
+        """, (self.giveaway_id, user_id))
+
+        if cur.fetchone():
+            await interaction.response.send_message("❌ Du bist schon dabei.", ephemeral=True)
+            return
+
+        user = get_user(user_id)
+
+        if user["coins"] < g["price"]:
+            await interaction.response.send_message("❌ Nicht genug Coins.", ephemeral=True)
+            return
+
+        change_coins(user_id, -g["price"])
+
+        cur.execute("""
+            INSERT INTO giveaway_entries (giveaway_id, user_id)
+            VALUES (?, ?)
+        """, (self.giveaway_id, user_id))
+        conn.commit()
+
+        await interaction.response.send_message("✅ Du bist dabei!", ephemeral=True)
+
+        await self.update_embed(interaction)
+
+# ================== TOP LISTS ==================
+
+@bot.tree.command(
+    name="listcoin",
+    description="Top 10 Spieler nach Coins",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def listcoin(interaction: discord.Interaction):
+
+    cur.execute("""
+        SELECT user_id, coins FROM users
+        ORDER BY coins DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    embed = discord.Embed(
+        title="🏆 Top 10 Coins",
+        color=discord.Color.gold()
+    )
+
+    for i, row in enumerate(rows, start=1):
+        member = interaction.guild.get_member(row["user_id"])
+        if member:
+            embed.add_field(
+                name=f"#{i}",
+                value=f"{member.mention}\n{row['coins']} {COIN_NAME}",
+                inline=False
+            )
+
+    await interaction.response.send_message(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+
+
+@bot.tree.command(
+    name="listvoice",
+    description="Top 10 Voice Zeit (gesamt)",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def listvoice(interaction: discord.Interaction):
+
+    cur.execute("""
+        SELECT user_id, voice_seconds FROM users
+        ORDER BY voice_seconds DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    embed = discord.Embed(
+        title="🎙 Top 10 Voice (gesamt)",
+        color=discord.Color.blurple()
+    )
+
+    for i, row in enumerate(rows, start=1):
+        member = interaction.guild.get_member(row["user_id"])
+        if member:
+            minutes = math.ceil(row["voice_seconds"] / 60)
+            embed.add_field(
+                name=f"#{i}",
+                value=f"{member.mention}\n{minutes} Minuten",
+                inline=False
+            )
+
+    await interaction.response.send_message(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+
+
+@bot.tree.command(
+    name="listvoiceweek",
+    description="Top 10 Voice Zeit (Woche)",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def listvoiceweek(interaction: discord.Interaction):
+
+    cur.execute("""
+        SELECT user_id, weekly_voice_seconds FROM users
+        ORDER BY weekly_voice_seconds DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    embed = discord.Embed(
+        title="🎙 Top 10 Voice (Woche)",
+        color=discord.Color.purple()
+    )
+
+    for i, row in enumerate(rows, start=1):
+        member = interaction.guild.get_member(row["user_id"])
+        if member:
+            minutes = math.ceil(row["weekly_voice_seconds"] / 60)
+            embed.add_field(
+                name=f"#{i}",
+                value=f"{member.mention}\n{minutes} Minuten",
+                inline=False
+            )
+
+    await interaction.response.send_message(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+
+
+@bot.tree.command(
+    name="listtext",
+    description="Top 10 Nachrichten (gesamt)",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def listtext(interaction: discord.Interaction):
+
+    cur.execute("""
+        SELECT user_id, messages FROM users
+        ORDER BY messages DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    embed = discord.Embed(
+        title="💬 Top 10 Nachrichten (gesamt)",
+        color=discord.Color.green()
+    )
+
+    for i, row in enumerate(rows, start=1):
+        member = interaction.guild.get_member(row["user_id"])
+        if member:
+            embed.add_field(
+                name=f"#{i}",
+                value=f"{member.mention}\n{row['messages']} Nachrichten",
+                inline=False
+            )
+
+    await interaction.response.send_message(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+
+
+@bot.tree.command(
+    name="listtextweek",
+    description="Top 10 Nachrichten (Woche)",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def listtextweek(interaction: discord.Interaction):
+
+    cur.execute("""
+        SELECT user_id, weekly_messages FROM users
+        ORDER BY weekly_messages DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    embed = discord.Embed(
+        title="💬 Top 10 Nachrichten (Woche)",
+        color=discord.Color.teal()
+    )
+
+    for i, row in enumerate(rows, start=1):
+        member = interaction.guild.get_member(row["user_id"])
+        if member:
+            embed.add_field(
+                name=f"#{i}",
+                value=f"{member.mention}\n{row['weekly_messages']} Nachrichten",
+                inline=False
+            )
+
+    await interaction.response.send_message(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
 
 
 @bot.command()
@@ -1265,6 +1638,100 @@ async def addcoinsall(ctx, coins: int):
     await ctx.send(embed=embed)
 
 
+@bot.tree.command(
+    name="startgiveaway",
+    description="Startet ein Giveaway",
+    guild=discord.Object(id=GUILD_ID)
+)
+@app_commands.describe(
+    name="Name des Giveaways",
+    description="Beschreibung des Giveaways",
+    price="Teilnahmekosten (0 = kostenlos)",
+    winners="Anzahl Gewinner",
+    reward="Gewinn pro Gewinner"
+)
+async def startgiveaway(
+    interaction: discord.Interaction,
+    name: str,
+    description: str,
+    price: int,
+    winners: int,
+    reward: int = 0
+):
+    if not await owner_only(interaction):
+        return
+
+    if not name or not description:
+        await interaction.response.send_message(
+            "❌ Name und Beschreibung sind Pflicht.",
+            ephemeral=True
+        )
+        return
+
+    if price is None or winners is None:
+        await interaction.response.send_message("❌ Preis und Gewinneranzahl fehlen.")
+        return
+
+    if price < 0 or winners <= 0:
+        await interaction.response.send_message("❌ Ungültige Werte.")
+        return
+
+    now = int(time.time())
+    ends_at = now + 86400
+
+    channel = interaction.guild.get_channel(GIVEAWAY_CHANNEL_ID)
+
+    embed = discord.Embed(
+        title="🎉 Giveaway (wird gleich aktualisiert)",
+        description=description,
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(name="👥 Teilnehmer", value="0", inline=False)
+    embed.add_field(name="🏆 Gewinner", value=str(winners), inline=False)
+
+    if price == 0:
+        embed.add_field(name="💸 Teilnahme", value="Kostenlos", inline=False)
+    else:
+        embed.add_field(
+            name="💸 Teilnahmegebühr",
+            value=f"{price} {COIN_EMOJI} {COIN_NAME}",
+            inline=False
+        )
+
+    if reward > 0:
+        embed.add_field(
+            name="🎁 Gewinn pro Gewinner",
+            value=f"{reward} {COIN_EMOJI}",
+            inline=False
+        )
+
+    msg = await channel.send(embed=embed)
+
+    cur.execute("""
+        INSERT INTO giveaways
+        (name, description, price, reward, winners, channel_id, message_id, created_at, ends_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (name, description, price, reward, winners, channel.id, msg.id, now, ends_at))
+    conn.commit()
+
+    gid = cur.lastrowid
+
+    embed.title = f"🎉 Giveaway Nr. {gid} | {name}"
+    await msg.edit(embed=embed, view=GiveawayView(gid))
+
+    await interaction.response.send_message(f"✅ Giveaway #{gid} gestartet!", ephemeral=True)
+
+
+@bot.command()
+async def endgiveaway(ctx, giveaway_id: int):
+    if not await owner_only(ctx):
+        return
+
+    await end_giveaway(giveaway_id, ctx.guild)
+    await ctx.send(f"✅ Giveaway #{giveaway_id} beendet.")
+
+
 # ================== EVENTS ==================
 
 @bot.event
@@ -1316,7 +1783,7 @@ async def on_message(message):
     for word in BAD_WORDS:
         if word in content:
             await message.delete()
-            await send_log_embed(
+            await send_log(
                 message.guild,
                 "🚫 Nachricht gelöscht (Blacklist)",
                 f"{message.author}\n{message.channel.mention}\n```{message.content}```",
@@ -1337,8 +1804,9 @@ async def on_message(message):
 
     # ❌ KEIN XP für Commands
     ctx = await bot.get_context(message)
+    await bot.process_commands(message)
+
     if ctx.valid:
-        await bot.process_commands(message)
         return
 
     now = time.time()
@@ -1354,8 +1822,8 @@ async def on_message(message):
     user = get_user(message.author.id)
     if user["messages"] % 20 == 0:
         cur.execute(
-            "UPDATE users SET coins = coins + 10 WHERE user_id = ?",
-            (message.author.id,)
+            "UPDATE users SET coins = coins + ? WHERE user_id = ?",
+            (COIN_REWARDS["message_bonus"], message.author.id)
         )
         conn.commit()
 
@@ -1382,13 +1850,51 @@ async def on_member_join(member):
         embed.set_image(url=WELCOME_IMAGE_URL)
         await channel.send(embed=embed)
 
+# ================== MODERATION LOGS ==================
+
+@bot.event
+async def on_member_ban(guild, user):
+    banner = "Unbekannt"
+
+    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+        if entry.target.id == user.id:
+            banner = entry.user.mention
+            break
+
+    await send_log(
+        guild,
+        "User gebannt",
+        f"**User:** {user.mention}\n**Von:** {banner}",
+        discord.Color.dark_red()
+    )
+
+
+@bot.event
+async def on_member_remove(member):
+    # Kann Kick ODER Leave sein → prüfen
+    guild = member.guild
+    kicker = None
+
+    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
+        if entry.target.id == member.id:
+            kicker = entry.user.mention
+            break
+
+    if kicker:
+        await send_log(
+            guild,
+            "User gekickt",
+            f"**User:** {member.mention}\n**Von:** {kicker}",
+            discord.Color.red()
+        )
+
 @bot.event
 async def on_raw_reaction_add(payload):
     if str(payload.message_id) not in REACTION_ROLE_MESSAGES:
         return
 
     guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
+    member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
     if not member or member.bot:
         return
     emoji = str(payload.emoji)
@@ -1460,60 +1966,264 @@ async def on_ready():
 
 @bot.event
 async def on_message_delete(message):
-    if message.author and not message.author.bot:
-        await send_log_embed(
-            message.guild,
-            "🗑️ Nachricht gelöscht",
-            f"👤 {message.author}\n📍 {message.channel.mention}\n\n```{message.content}```",
-            discord.Color.dark_red()
-        )
+    if not message.guild or message.author.bot:
+        return
+
+    deleter = "Unbekannt"
+
+    # 🔍 Audit Log prüfen (wer hat gelöscht)
+    async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
+        if entry.target.id == message.author.id and entry.extra.channel.id == message.channel.id:
+            deleter = entry.user.mention
+            break
+
+    content = message.content if message.content else "*Keine Nachricht / Embed / Datei*"
+
+    await send_log(
+        message.guild,
+        "Nachricht gelöscht",
+        (
+            f"**Autor:** {message.author.mention}\n"
+            f"**Gelöscht von:** {deleter}\n"
+            f"**Channel:** {message.channel.mention}\n\n"
+            f"**Inhalt:**\n```{content}```"
+        ),
+        discord.Color.red()
+    )
 
 @bot.event
 async def on_message_edit(before, after):
-    if after.author.bot or before.content == after.content:
+    if not before.guild or after.author.bot:
         return
 
-    await send_log_embed(
+    if before.content == after.content:
+        return
+
+    before_content = before.content or "*Kein Text*"
+    after_content = after.content or "*Kein Text*"
+
+    await send_log(
         before.guild,
-        "✏️ Nachricht bearbeitet",
-        f"👤 {after.author}\n📍 {after.channel.mention}\n\n"
-        f"🕰️ Vorher:\n```{before.content}```\n"
-        f"🆕 Nachher:\n```{after.content}```",
+        "Nachricht bearbeitet",
+        (
+            f"**Autor:** {after.author.mention}\n"
+            f"**Channel:** {after.channel.mention}\n\n"
+            f"**Vorher:**\n```{before_content}```\n\n"
+            f"**Nachher:**\n```{after_content}```"
+        ),
         discord.Color.orange()
     )
 
 @bot.event
 async def on_guild_channel_create(channel):
-    await send_log_embed(
+    creator = "Unbekannt"
+
+    async for entry in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_create):
+        if entry.target.id == channel.id:
+            creator = entry.user.mention
+            break
+
+    await send_log(
         channel.guild,
-        "➕ Channel erstellt",
-        f"{channel.name} ({channel.id})",
+        "Channel erstellt",
+        f"**Channel:** {channel.mention}\n**Von:** {creator}",
         discord.Color.green()
     )
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    await send_log_embed(
+    deleter = "Unbekannt"
+
+    async for entry in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_delete):
+        if entry.target.id == channel.id:
+            deleter = entry.user.mention
+            break
+
+    await send_log(
         channel.guild,
-        "❌ Channel gelöscht",
-        f"{channel.name} ({channel.id})",
+        "Channel gelöscht",
+        f"**Channel:** #{channel.name}\n**Von:** {deleter}",
         discord.Color.red()
     )
 
 
+# ================== CHANNEL PERMISSIONS ==================
+
+@bot.event
+async def on_guild_channel_update(before, after):
+
+    if before.overwrites != after.overwrites:
+        moderator = "Unbekannt"
+
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_update):
+            if entry.target.id == after.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            after.guild,
+            "Channel Berechtigungen geändert",
+            (
+                f"**Channel:** {after.mention}\n"
+                f"**Von:** {moderator}"
+            ),
+            discord.Color.blurple()
+        )
+
+# ================== ROLLEN LOGS ==================
+
+@bot.event
+async def on_guild_role_create(role):
+    creator = "Unbekannt"
+
+    async for entry in role.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_create):
+        if entry.target.id == role.id:
+            creator = entry.user.mention
+            break
+
+    await send_log(
+        role.guild,
+        "Rolle erstellt",
+        f"**Rolle:** {role.mention}\n**Von:** {creator}",
+        discord.Color.green()
+    )
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    deleter = "Unbekannt"
+
+    async for entry in role.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_delete):
+        if entry.target.id == role.id:
+            deleter = entry.user.mention
+            break
+
+    await send_log(
+        role.guild,
+        "Rolle gelöscht",
+        f"**Rolle:** {role.name}\n**Von:** {deleter}",
+        discord.Color.red()
+    )
+
 @bot.event
 async def on_member_update(before, after):
     if before.nick != after.nick:
+        # ================== ROLLEN ÄNDERUNGEN ==================
+        before_roles = set(before.roles)
+        after_roles = set(after.roles)
+
+        added_roles = after_roles - before_roles
+        removed_roles = before_roles - after_roles
+
+        if added_roles or removed_roles:
+
+            moderator = "Unbekannt"
+
+            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
+                if entry.target.id == after.id:
+                    moderator = entry.user.mention
+                    break
+
+            for role in added_roles:
+                await send_log(
+                    after.guild,
+                    "Rolle hinzugefügt",
+                    (
+                        f"**User:** {after.mention}\n"
+                        f"**Von:** {moderator}\n"
+                        f"**Rolle:** {role.mention}"
+                    ),
+                    discord.Color.green()
+                )
+
+            for role in removed_roles:
+                await send_log(
+                    after.guild,
+                    "Rolle entfernt",
+                    (
+                        f"**User:** {after.mention}\n"
+                        f"**Von:** {moderator}\n"
+                        f"**Rolle:** {role.mention}"
+                    ),
+                    discord.Color.red()
+                )
         old = before.nick or before.name
         new = after.nick or after.name
 
-        await send_log_embed(
+        changer = "Unbekannt"
+
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == after.id:
+                changer = entry.user.mention
+                break
+
+        await send_log(
             after.guild,
-            "👤 Nickname geändert",
-            f"{old} → {new}",
+            "Nickname geändert",
+            (
+                f"**User:** {after.mention}\n"
+                f"**Geändert von:** {changer}\n\n"
+                f"**Vorher:** {old}\n"
+                f"**Nachher:** {new}"
+            ),
             discord.Color.blue()
         )
+    # ================== TIMEOUT LOG ==================
+    if before.timed_out_until != after.timed_out_until:
 
+        moderator = "Unbekannt"
+
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+            if entry.target.id == after.id:
+                moderator = entry.user.mention
+                break
+
+        if after.timed_out_until:
+            duration = f"<t:{int(after.timed_out_until.timestamp())}:f>"
+
+            await send_log(
+                after.guild,
+                "User Timeout",
+                (
+                    f"**User:** {after.mention}\n"
+                    f"**Von:** {moderator}\n"
+                    f"**Bis:** {duration}"
+                ),
+                discord.Color.orange()
+            )
+        else:
+            await send_log(
+                after.guild,
+                "Timeout entfernt",
+                (
+                    f"**User:** {after.mention}\n"
+                    f"**Von:** {moderator}"
+                ),
+                discord.Color.green()
+            )
+
+# ================== ROLLEN UPDATE ==================
+
+@bot.event
+async def on_guild_role_update(before, after):
+
+    if before.permissions != after.permissions:
+        moderator = "Unbekannt"
+
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_update):
+            if entry.target.id == after.id:
+                moderator = entry.user.mention
+                break
+
+        await send_log(
+            after.guild,
+            "Rollenrechte geändert",
+            (
+                f"**Rolle:** {after.mention}\n"
+                f"**Von:** {moderator}"
+            ),
+            discord.Color.blurple()
+        )
 
 async def weekly_reset_task():
     await bot.wait_until_ready()
@@ -1546,7 +2256,7 @@ async def weekly_reset_task():
             LIMIT 3
             """)
             ranking = cur.fetchall()
-            rewards = [50, 30, 15]
+            rewards = COIN_REWARDS["weekly"]
 
             embed = discord.Embed(
                 title="🏆 Wochenrangliste (letzte 7 Tage)",
@@ -1635,7 +2345,59 @@ async def cleanup_pending_gambles():
                 pending_gambles.pop((u1, u2), None)
 
 
+async def end_giveaway(giveaway_id: int, guild: discord.Guild):
+    cur.execute("SELECT * FROM giveaways WHERE id = ?", (giveaway_id,))
+    g = cur.fetchone()
 
+    if not g or g["active"] == 0:
+        return
+
+    cur.execute("""
+        SELECT user_id FROM giveaway_entries
+        WHERE giveaway_id = ?
+    """, (giveaway_id,))
+    users = [r["user_id"] for r in cur.fetchall()]
+
+    if users:
+        winners = random.sample(users, min(g["winners"], len(users)))
+    else:
+        winners = []
+
+    text = ""
+
+    for uid in winners:
+        if g["reward"] > 0:
+            change_coins(uid, g["reward"])
+        text += f"<@{uid}>\n"
+
+    channel = guild.get_channel(g["channel_id"])
+
+    await channel.send(
+        f"🏆 Giveaway **{g['name']}** beendet!\n\n"
+        f"Gewinner:\n{text or 'Niemand hat teilgenommen.'}"
+    )
+
+    cur.execute("UPDATE giveaways SET active = 0 WHERE id = ?", (giveaway_id,))
+    conn.commit()
+
+async def giveaway_task():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now = int(time.time())
+
+        cur.execute("""
+            SELECT id FROM giveaways
+            WHERE active = 1 AND ends_at <= ?
+        """, (now,))
+
+        rows = cur.fetchall()
+
+        for r in rows:
+            for guild in bot.guilds:
+                await end_giveaway(r["id"], guild)
+
+        await asyncio.sleep(60)
 
 # ================== START ==================
 from dotenv import load_dotenv
